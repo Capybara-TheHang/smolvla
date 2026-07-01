@@ -22,6 +22,7 @@ import dataclasses
 import logging
 import time
 from contextlib import nullcontext
+from numbers import Number
 from pprint import pformat
 from typing import TYPE_CHECKING, Any
 
@@ -66,6 +67,18 @@ from lerobot.utils.utils import (
 )
 
 from .lerobot_eval import eval_policy_all
+
+
+def _format_scalar_log_metrics(metrics: dict[str, Any]) -> str:
+    parts = []
+    for key, value in metrics.items():
+        if isinstance(value, torch.Tensor):
+            if value.numel() != 1:
+                continue
+            value = value.detach().item()
+        if isinstance(value, Number):
+            parts.append(f"{key}:{float(value):.6g}")
+    return " ".join(parts)
 
 
 def update_policy(
@@ -593,15 +606,18 @@ def train(cfg: TrainPipelineConfig, accelerator: "Accelerator | None" = None):
                 step_time = train_tracker.update_s.avg + train_tracker.dataloading_s.avg
                 if step_time > 0:
                     train_tracker.samples_per_s = effective_batch_size / step_time
-                logging.info(train_tracker)
+                extra_log_metrics = {}
+                if output_dict:
+                    extra_log_metrics.update(output_dict)
+                # Log sample weighting statistics if enabled.
+                if sample_weighter is not None:
+                    weighter_stats = sample_weighter.get_stats()
+                    extra_log_metrics.update({f"sample_weighting/{k}": v for k, v in weighter_stats.items()})
+                extra_log_str = _format_scalar_log_metrics(extra_log_metrics)
+                logging.info(f"{train_tracker} {extra_log_str}" if extra_log_str else train_tracker)
                 if wandb_logger:
                     wandb_log_dict = train_tracker.to_dict()
-                    if output_dict:
-                        wandb_log_dict.update(output_dict)
-                    # Log sample weighting statistics if enabled
-                    if sample_weighter is not None:
-                        weighter_stats = sample_weighter.get_stats()
-                        wandb_log_dict.update({f"sample_weighting/{k}": v for k, v in weighter_stats.items()})
+                    wandb_log_dict.update(extra_log_metrics)
                     wandb_logger.log_dict(wandb_log_dict, step)
             train_tracker.reset_averages()
 

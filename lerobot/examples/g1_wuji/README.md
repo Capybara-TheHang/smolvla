@@ -32,3 +32,46 @@ Default outputs:
 /home/lightwheel/workspace/smolvla/outputs/synthetic_lerobot_one_arm_hand
 /home/lightwheel/workspace/smolvla/outputs/train/smolvla_synthetic_smoke
 ```
+
+## Training with TensorBoard
+
+`train.sh` starts a background TensorBoard server automatically, mirrors training metrics into
+TensorBoard event files, and keeps every run under `lerobot/examples/g1_wuji/tensorboard_runs/`.
+
+Install TensorBoard once in the training environment if it is not already available:
+
+```bash
+conda activate lerobot-smolvla
+pip install tensorboard tensorboardX
+```
+
+```bash
+cd /home/lightwheel/workspace/smolvla
+conda activate lerobot-smolvla
+bash lerobot/examples/g1_wuji/train.sh
+```
+
+The script prints a URL like:
+
+```text
+TensorBoard URL: http://<training-machine-ip>:6006
+```
+
+Useful overrides:
+
+```bash
+TENSORBOARD_PORT=6007 LOG_FREQ=5 STEPS=3000 bash lerobot/examples/g1_wuji/train.sh
+ENABLE_TENSORBOARD=false bash lerobot/examples/g1_wuji/train.sh
+```
+
+To reopen historical TensorBoard runs without starting training:
+
+```bash
+bash lerobot/examples/g1_wuji/tensorboard.sh
+```
+
+To stop the managed background TensorBoard process:
+
+```bash
+bash lerobot/examples/g1_wuji/tensorboard.sh stop
+```

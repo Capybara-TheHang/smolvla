@@ -208,7 +208,7 @@ source ~/.cloudxr/run/cloudxr.env
 conda activate isaacteleop
 
 export LD_LIBRARY_PATH="$CONDA_PREFIX/lib/python3.12/site-packages/nvidia/cu13/lib:$LD_LIBRARY_PATH"
-python examples/g1_wuji_teleop/scripts/g1_wuji_teleop_main.py \
-    --config examples/g1_wuji_teleop/config/avp_manus.yml \
+python /home/lightwheel/workspace/smolvla_github_private/isaacteleop/examples/g1_wuji_teleop/scripts/g1_wuji_teleop_main.py \
+    --config /home/lightwheel/workspace/smolvla_github_private/isaacteleop/examples/g1_wuji_teleop/config/avp_manus.yml \
     --device cuda:0 \
     --viz kit

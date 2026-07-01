@@ -165,6 +165,8 @@ wandb/
 # Data folders
 data/
 outputs/
+examples/g1_wuji/tensorboard_runs/
+examples/g1_wuji/.tensorboard/
 
 # Translations
 *.mo
@@ -182,4 +184,3 @@ outputs/
 __pycache__/
 *.py[cod]
 examples/g1_wuji/output/
-

@@ -1,6 +1,8 @@
 checkpoints/
 outputs/
 isaacteleop/examples/g1_wuji_teleop/data/
+lerobot/examples/g1_wuji/tensorboard_runs/
+lerobot/examples/g1_wuji/.tensorboard/
 cmd
 lerobot/examples/g1_wuji/convert.sh
 lerobot/examples/g1_wuji/train.sh
