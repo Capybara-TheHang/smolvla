@@ -1,0 +1,117 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Build Windows (Experimental)
+
+# WARNING: This workflow is for experimental Windows builds only!
+# Windows support is NOT officially supported - this only tests source compilation.
+# There is NO guarantee of runtime functionality on Windows.
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+# Per workflow+ref: max 1 running + 1 pending (new pending replaces old).
+# PRs cancel in-progress runs; pushes to main do not.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-windows:
+    # Pin to windows-2025 (VS 2022) until VS 2026 is validated.
+    runs-on: windows-2025
+
+    env:
+      SCCACHE_GHA_ENABLED: "true"
+
+    strategy:
+      matrix:
+        build_type: [Debug, Release]
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+      with:
+        submodules: recursive
+
+    - name: Install uv
+      uses: ./.github/actions/setup-uv
+
+    - name: Setup sccache
+      uses: Mozilla-Actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696  # v0.0.10
+
+    # Put cl.exe and other build tools in PATH.
+    # Must run before vcpkg setup so our VCPKG_ROOT isn't overridden by vcvarsall.
+    - name: Setup MSVC (Developer Command Prompt)
+      uses: ilammy/msvc-dev-cmd@v1
+
+    # vcpkg - required when BUILD_PLUGIN_OAK_CAMERA=ON for DepthAI v3.x deps
+    - name: Cache vcpkg
+      uses: actions/cache@v4
+      with:
+        path: |
+          C:\vcpkg
+          build\vcpkg_installed
+        key: vcpkg-${{ runner.os }}-${{ hashFiles('cmake/DepthAIVcpkgManifest.cmake') }}
+        restore-keys: |
+          vcpkg-${{ runner.os }}-
+
+    - name: Setup vcpkg
+      run: |
+        if (!(Test-Path C:\vcpkg\vcpkg.exe)) {
+          git clone https://github.com/microsoft/vcpkg C:\vcpkg
+          C:\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+        }
+        echo "VCPKG_ROOT=C:\vcpkg" >> $env:GITHUB_ENV
+
+    - name: Verify sccache
+      run: |
+        sccache --version
+
+    # Install LunarG Vulkan SDK (headers + loader lib). Sets VULKAN_SDK
+    # env var so CMake's FindVulkan locates the install. The Vulkan
+    # runtime/driver is not present on this CI runner, but Televiz [gpu]
+    # tests skip cleanly via is_gpu_available() when no device is enumerated.
+    - name: Install Vulkan SDK
+      uses: humbletim/install-vulkan-sdk@v1.2
+      with:
+        version: 1.3.290.0
+        cache: true
+
+    # CUDA Toolkit needed at link time for viz_core (device_image links
+    # cudart). Jimver action works correctly on Windows (the arm64
+    # /x86_64/ hardcoding bug is Linux-only); runs NVIDIA's silent
+    # network installer and sets CUDA_PATH so find_package(CUDAToolkit)
+    # locates the install.
+    - name: Install CUDA Toolkit
+      uses: Jimver/cuda-toolkit@v0.2.35
+      with:
+        cuda: '12.4.0'
+        method: 'network'
+        sub-packages: '["nvcc", "cudart"]'
+
+    - name: Configure CMake
+      # Note:
+      # sccache does not work with VSBuild, so we use Ninja generator here.
+      # -G Ninja would pickup mingw64 by default on Windows, so we explicitly set the compiler to cl.exe
+      # Force embedded debug info (Z7) to avoid PDB contention whenever debug info is generated.
+      run: >
+        cmake -B build -G Ninja
+        -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+        -DENABLE_EXPERIMENTAL_WINDOWS_BUILD=ON
+        -DCMAKE_C_COMPILER_LAUNCHER=sccache
+        -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+        -DCMAKE_C_COMPILER="cl.exe"
+        -DCMAKE_CXX_COMPILER="cl.exe"
+        -DCMAKE_MSVC_DEBUG_INFORMATION_FORMAT=Embedded
+        -DBUILD_PLUGIN_OAK_CAMERA=ON
+        -DBUILD_VIZ=ON
+        -DCMAKE_TOOLCHAIN_FILE="${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake"
+
+    - name: Build
+      run: cmake --build build --parallel
+
+    - name: Run All Tests
+      run: ctest --test-dir build --output-on-failure --parallel

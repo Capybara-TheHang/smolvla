@@ -1,0 +1,39 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Synthetic GPU source — useful sanity check for the framework + display
+# path without needing any camera hardware. Mirrors the schema of the
+# real-camera configs (v4l2 / oakd / zed) so the same YAML structure
+# carries across.
+
+source: local                   # local | rtp — see real-camera configs for rtp
+streaming:
+  host: 127.0.0.1               # only used by camera_streamer (rtp mode)
+encoder: auto                   # auto | native | gstreamer
+
+cameras:
+  - name: synth
+    enabled: true
+    type: synthetic
+    width: 1280
+    height: 720
+    fps: 60
+    hue_speed_hz: 0.25
+    rtp:                        # only used when source: rtp + camera_streamer
+      port: 5000
+      bitrate_mbps: 15
+      # gop:                    # default: fps*5 (ULL tuning)
+
+display:
+  mode: window                  # window | xr
+  window:
+    width: 1280
+    height: 720
+  xr:
+    near_z: 0.05
+    far_z: 100.0
+  clear_color: [0.05, 0.05, 0.08, 1.0]
+  placements:
+    synth:                      # size defaults to 1.0 m wide × aspect-derived height
+      lock_mode: lazy
+      distance: 1.5

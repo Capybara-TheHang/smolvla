@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# pyproject.toml for stub generation
+# Used by uv run to install dependencies needed for pybind11-stubgen
+
+[project]
+name = "isaacteleop-stubgen"
+version = "0.0.0"  # Internal tooling - not versioned
+description = "Stub generation dependencies for Isaac Teleop pybind11 modules"
+requires-python = ">=3.10,<3.14"
+
+dependencies = [
+    "pybind11-stubgen",
+    "numpy",
+]

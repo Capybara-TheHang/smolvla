@@ -1,0 +1,116 @@
+// SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+#include "manus_hand_visualizer.hpp"
+
+#include <manus/manus_hand_tracking_plugin.hpp>
+
+#include <algorithm>
+#include <chrono>
+#include <iomanip>
+#include <iostream>
+#include <thread>
+#include <vector>
+
+int main(int argc, char** argv)
+try
+{
+    (void)argc;
+    (void)argv;
+
+    std::cout << "[Manus] Initializing Manus Tracker..." << std::endl;
+
+    // Initialize the Manus tracker
+    auto& tracker = plugins::manus::ManusTracker::instance("ManusHandPrinter");
+
+    // Start Vulkan visualizer in a background thread.
+    // If X11 or Vulkan is unavailable the thread exits cleanly and printing
+    // continues without the window.
+    // std::jthread automatically requests stop and joins on destruction,
+    // preventing the thread from outliving the tracker singleton.
+    std::jthread vis_thread(
+        [&tracker](std::stop_token st)
+        {
+            try
+            {
+                plugins::manus::HandVisualizer vis;
+                vis.run(tracker, std::move(st));
+            }
+            catch (const std::exception& e)
+            {
+                std::cerr << "[Vis] " << e.what() << " — running without visualizer" << std::endl;
+            }
+        });
+
+    std::cout << "[Manus] Press Ctrl+C to stop. Printing joint data..." << std::endl;
+
+    int frame = 0;
+    bool waiting_printed = false;
+    while (true)
+    {
+        // Get glove data from Manus SDK
+        auto left_nodes = tracker.get_left_hand_nodes();
+        auto right_nodes = tracker.get_right_hand_nodes();
+
+        if (left_nodes.empty() && right_nodes.empty())
+        {
+            if (!waiting_printed)
+            {
+                std::cout << "[Manus] Waiting for gloves..." << std::endl;
+                waiting_printed = true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            continue;
+        }
+        waiting_printed = false;
+
+        std::cout << "\n[Manus] === Frame " << frame << " ===" << std::endl;
+
+        // Helper lambda to print hand data
+        auto print_hand = [](const std::string& side, const std::vector<SkeletonNode>& nodes)
+        {
+            if (nodes.empty())
+            {
+                return;
+            }
+
+            std::cout << "[Manus] " << side << " hand (" << nodes.size() << " joints):" << std::endl;
+
+            for (size_t i = 0; i < std::min(nodes.size(), static_cast<size_t>(5)); ++i)
+            {
+                const auto& pos = nodes[i].transform.position;
+                const auto& ori = nodes[i].transform.rotation;
+
+                std::cout << "[Manus]   Joint " << i << ": "
+                          << "pos=[" << std::fixed << std::setprecision(3) << pos.x << ", " << pos.y << ", " << pos.z
+                          << "] "
+                          << "ori=[" << ori.x << ", " << ori.y << ", " << ori.z << ", " << ori.w << "]" << std::endl;
+            }
+
+            if (nodes.size() > 5)
+            {
+                std::cout << "[Manus]   ... (" << (nodes.size() - 5) << " more joints)" << std::endl;
+            }
+        };
+
+        print_hand("left", left_nodes);
+        print_hand("right", right_nodes);
+
+        std::cout << std::flush;
+
+        frame++;
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    }
+
+    return 0;
+}
+catch (const std::exception& e)
+{
+    std::cerr << argv[0] << ": " << e.what() << std::endl;
+    return 1;
+}
+catch (...)
+{
+    std::cerr << argv[0] << ": Unknown error occurred" << std::endl;
+    return 1;
+}

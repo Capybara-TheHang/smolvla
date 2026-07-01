@@ -1,0 +1,133 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""
+Hand Transform Node - Applies a 4x4 transform to hand tracking data.
+
+Transforms all hand joint positions and orientations using a homogeneous
+transformation matrix while preserving joint radii and validity fields.
+
+The transform matrix is received as a tensor input from the graph, typically
+provided by a TransformSource node.
+
+Note: All 26 joint positions and orientations are transformed (not just the
+wrist) since all joints share the same coordinate frame. Transforming only
+the wrist while leaving other joints untransformed would break the hand skeleton.
+"""
+
+import numpy as np
+
+from ..interface.base_retargeter import BaseRetargeter
+from ..interface.retargeter_core_types import RetargeterIO, RetargeterIOType
+from ..interface.tensor_group import OptionalTensorGroup
+from ..interface.tensor_group_type import OptionalType
+from ..tensor_types import HandInput, HandInputIndex, TransformMatrix
+from .transform_utils import (
+    _copy_tensor_group_slots_from_dlpack_input,
+    decompose_transform,
+    transform_orientations_batch,
+    transform_positions_batch,
+)
+
+
+# Index of the matrix field within the TransformMatrix TensorGroupType
+_MATRIX_INDEX = 0
+
+
+class HandTransform(BaseRetargeter):
+    """
+    Applies a 4x4 homogeneous transform to hand tracking data.
+
+    Transforms all 26 joint positions (R @ p + t) and orientations (R_quat * q)
+    for both left and right hands while passing through joint radii, validity
+    flags unchanged.
+
+    The transform matrix is provided as a tensor input, allowing it to be
+    sourced from a TransformSource node in the graph.
+
+    Inputs:
+        - "hand_left": HandInput tensor (26 joints)
+        - "hand_right": HandInput tensor (26 joints)
+        - "transform": TransformMatrix tensor containing the (4, 4) matrix
+
+    Outputs:
+        - "hand_left": HandInput tensor with transformed joint poses
+        - "hand_right": HandInput tensor with transformed joint poses
+
+    Example:
+        transform_input = ValueInput("xform_input", TransformMatrix())
+        hand_transform = HandTransform("hand_xform")
+
+        transformed = hand_transform.connect({
+            "hand_left": hand_source.output("hand_left"),
+            "hand_right": hand_source.output("hand_right"),
+            "transform": transform_input.output("value"),
+        })
+    """
+
+    LEFT = "hand_left"
+    RIGHT = "hand_right"
+
+    def __init__(self, name: str) -> None:
+        """
+        Initialize hand transform node.
+
+        Args:
+            name: Unique name for this node.
+        """
+        super().__init__(name)
+
+    def input_spec(self) -> RetargeterIOType:
+        """Declare hand (Optional) and transform matrix inputs."""
+        return {
+            self.LEFT: OptionalType(HandInput()),
+            self.RIGHT: OptionalType(HandInput()),
+            "transform": TransformMatrix(),
+        }
+
+    def output_spec(self) -> RetargeterIOType:
+        """Declare transformed hand output specs for left and right (Optional)."""
+        return {
+            self.LEFT: OptionalType(HandInput()),
+            self.RIGHT: OptionalType(HandInput()),
+        }
+
+    def _compute_fn(self, inputs: RetargeterIO, outputs: RetargeterIO, context) -> None:
+        """
+        Apply the 4x4 transform to all hand joint positions and orientations.
+
+        If an input hand is ``None`` (Optional absent), the corresponding
+        output is set to ``None`` as well (propagated).
+
+        Position is transformed as: p' = R @ p + t (batch over 26 joints)
+        Orientation is transformed as: q' = R_quat * q (batch over 26 joints)
+        All other fields (radii, validity) are copied unchanged.
+
+        Args:
+            inputs: Dict with "hand_left", "hand_right", and "transform" TensorGroups.
+            outputs: Dict with "hand_left" and "hand_right" TensorGroups.
+            context: ComputeContext (unused by this transform node).
+        """
+        matrix = np.from_dlpack(inputs["transform"][_MATRIX_INDEX])
+        rotation, translation = decompose_transform(matrix)
+
+        for side in (self.LEFT, self.RIGHT):
+            if inputs[side].is_none:
+                outputs[side].set_none()
+            else:
+                self._transform_hand(inputs[side], outputs[side], rotation, translation)
+
+    @staticmethod
+    def _transform_hand(
+        inp: OptionalTensorGroup,
+        out: OptionalTensorGroup,
+        rotation: np.ndarray,
+        translation: np.ndarray,
+    ) -> None:
+        """Apply the transform to a single hand's joint data."""
+        _copy_tensor_group_slots_from_dlpack_input(inp, out)
+
+        transform_positions_batch(
+            out[HandInputIndex.JOINT_POSITIONS], rotation, translation
+        )
+        transform_orientations_batch(out[HandInputIndex.JOINT_ORIENTATIONS], rotation)

@@ -1,0 +1,27 @@
+// SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+namespace core;
+
+// Timestamp for recording and synchronization across data sources.
+//
+// All timestamps are in nanoseconds. The "local common clock" is the system
+// monotonic clock (CLOCK_MONOTONIC on Linux, QueryPerformanceCounter on Windows).
+struct DeviceDataTimestamp {
+    // Timestamp of when the sample became available to the recording system,
+    // expressed in the local common clock domain (system monotonic time, nanoseconds).
+    // Useful for measuring pipeline latency (available - sample).
+    // Set by the runtime when data is received.
+    available_time_local_common_clock: int64;
+
+    // Timestamp of when the sample was taken, expressed in the local common clock
+    // domain (system monotonic time, nanoseconds). Enables synchronization across
+    // different data sources. May be noisier than device clock timestamps, but
+    // values from different devices will not drift apart arbitrarily.
+    sample_time_local_common_clock: int64;
+
+    // Timestamp from the measurement source's own clock (e.g., device clock).
+    // This is in nanoseconds, but may be in a different clock domain for each
+    // data source, so values from different devices are not directly comparable.
+    sample_time_raw_device_clock: int64;
+}

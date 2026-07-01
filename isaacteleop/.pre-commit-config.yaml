@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.1
+    hooks:
+      # Run the linter
+      - id: ruff
+        args: ["--fix"]
+      # Run the formatter
+      - id: ruff-format
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: check-symlinks
+      - id: destroyed-symlinks
+      - id: check-added-large-files
+        args: ["--maxkb=2000"]  # restrict files more than 2 MB. Should use git-lfs instead.
+      - id: check-yaml
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: check-executables-have-shebangs
+      - id: check-toml
+      - id: end-of-file-fixer
+      - id: check-shebang-scripts-are-executable
+      - id: detect-private-key
+      - id: debug-statements
+  # SPDX license headers (REUSE): require SPDX-FileCopyrightText and SPDX-License-Identifier
+  - repo: https://github.com/fsfe/reuse-tool
+    rev: v6.2.0
+    hooks:
+      - id: reuse-lint-file
+        name: REUSE lint (SPDX headers on changed files)
+        # Include CMakeLists.txt and Dockerfile.xxx by matching those explicitly in the regex
+        files: \.(py|js|ts|cpp|c|h|hpp|cxx|hxx|cmake|md|yaml|yml|sh|fbs|toml|html)$|CMakeLists\.txt$|Dockerfile(\.[A-Za-z0-9_-]+)?$
+  # Copyright year: ensure SPDX-FileCopyrightText includes current year (--fix updates in place)
+  - repo: local
+    hooks:
+      - id: check-copyright-year
+        name: Check copyright year (include current year)
+        entry: python3 scripts/check_copyright_year.py --fix
+        language: system
+        # Include CMakeLists.txt and Dockerfile.xxx by matching those explicitly in the regex
+        files: \.(py|js|ts|cpp|c|h|hpp|cxx|hxx|cmake|md|yaml|yml|sh|fbs|toml|html)$|CMakeLists\.txt$|Dockerfile(\.[A-Za-z0-9_-]+)?$

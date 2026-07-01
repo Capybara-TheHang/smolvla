@@ -1,0 +1,132 @@
+<!--
+SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+
+# Contributing
+
+Thanks for your interest in contributing! This document outlines how to build, test, and submit changes.
+
+## Code Style
+
+- Use meaningful, descriptive names for variables, functions, and types in all languages.
+- Write short docstrings for public modules, classes, and functions.
+- Write clear, easy-to-read, and maintainable code.
+- Keep code warnings and linter errors to a minimum.
+- In general, prefer clarity over clever tricks, and keep the codebase friendly for contributors.
+
+**C++**
+- Use C++20.
+- Format C++ with `clang-format`.
+
+**Python**
+- Follow PEP 8 for style.
+- Use type annotations (PEP 484) and prefer formatted string literals (PEP 701, f-strings).
+
+## Pre-commit
+
+We use [pre-commit](https://pre-commit.com/) to run Python linters and formatters (including
+[Ruff](https://docs.astral.sh/ruff/)) before commits. If you are using uv like us, install the
+tools and hooks as follows:
+
+```bash
+uv tool install ruff
+uv tool install pre-commit
+pre-commit install
+```
+
+After that, pre-commit runs automatically on `git commit`. To run on all files manually:
+
+```bash
+SKIP=check-copyright-year pre-commit run --all-files
+```
+
+To run only Ruff (check + fix and format):
+
+```bash
+ruff check . --fix
+ruff format .
+```
+
+### License headers
+
+We use [REUSE](https://reuse.software/) to enforce SPDX license headers on source files. Pre-commit runs `reuse lint-file` on changed files (e.g. `.py`, `.cpp`, `.md`, `.yaml`):
+
+1. **Required fields**: Each file must have `SPDX-FileCopyrightText` and `SPDX-License-Identifier`.
+2. **License**: `SPDX-License-Identifier` must be `Apache-2.0` (full text in `LICENSES/Apache-2.0.txt`).
+
+Example header:
+
+```
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+```
+
+To add or fix headers, install the [reuse tool](https://github.com/fsfe/reuse-tool)
+
+```bash
+uv tool install reuse
+```
+
+and run for example:
+
+```bash
+reuse annotate -t compact -l Apache-2.0 --skip-unrecognised -r path/to/file
+```
+
+REUSE does not auto-update the copyright year when you touch a file; include the current year when adding or editing headers.
+
+## CI
+GitHub Actions builds the default targets and runs tests.
+
+## Pull Requests
+1. Create a feature branch
+2. Ensure builds pass locally and in CI
+3. Describe motivation, changes, and testing in the PR
+4. Link related issues
+
+## License
+- Your contributions are under the repository’s license unless stated otherwise
+
+### Signing Your Work
+
+* We require that all contributors "sign-off" on their commits. This certifies that the contribution is your original work, or you have rights to submit it under the same license, or a compatible license.
+
+  * Any contribution which contains commits that are not Signed-Off will not be accepted.
+
+* To sign off on a commit you simply use the `--signoff` (or `-s`) option when committing your changes:
+  ```bash
+  $ git commit -s -m "Add cool feature."
+  ```
+  This will append the following to your commit message:
+  ```
+  Signed-off-by: Your Name <your@email.com>
+  ```
+
+* Full text of the DCO:
+
+  ```
+    Developer Certificate of Origin
+    Version 1.1
+
+    Copyright (C) 2004, 2006 The Linux Foundation and its contributors.
+    1 Letterman Drive
+    Suite D4700
+    San Francisco, CA, 94129
+
+    Everyone is permitted to copy and distribute verbatim copies of this license document, but changing it is not allowed.
+  ```
+
+  ```
+    Developer's Certificate of Origin 1.1
+
+    By making a contribution to this project, I certify that:
+
+    (a) The contribution was created in whole or in part by me and I have the right to submit it under the open source license indicated in the file; or
+
+    (b) The contribution is based upon previous work that, to the best of my knowledge, is covered under an appropriate open source license and I have the right under that license to submit that work with modifications, whether created in whole or in part by me, under the same open source license (unless I am permitted to submit under a different license), as indicated in the file; or
+
+    (c) The contribution was provided directly to me by some other person who certified (a), (b) or (c) and I have not modified it.
+
+    (d) I understand and agree that this project and the contribution are public and that a record of the contribution (including all personal information I submit with it, including my sign-off) is maintained indefinitely and may be redistributed consistent with this project or the open source license(s) involved.
+  ```

@@ -1,0 +1,46 @@
+// SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+#pragma once
+
+#include <deviceio_base/controller_tracker_base.hpp>
+#include <mcap/tracker_channels.hpp>
+#include <schema/controller_generated.h>
+
+#include <cstdint>
+#include <memory>
+#include <string_view>
+
+namespace core
+{
+
+using ControllerMcapViewers = McapTrackerViewers<ControllerSnapshotRecord>;
+
+class ReplayControllerTrackerImpl : public IControllerTrackerImpl
+{
+public:
+    ReplayControllerTrackerImpl(std::unique_ptr<mcap::McapReader> reader, std::string_view base_name);
+
+    ReplayControllerTrackerImpl(const ReplayControllerTrackerImpl&) = delete;
+    ReplayControllerTrackerImpl& operator=(const ReplayControllerTrackerImpl&) = delete;
+    ReplayControllerTrackerImpl(ReplayControllerTrackerImpl&&) = delete;
+    ReplayControllerTrackerImpl& operator=(ReplayControllerTrackerImpl&&) = delete;
+
+    void update(int64_t monotonic_time_ns) override;
+    const ControllerSnapshotTrackedT& get_left_controller() const override;
+    const ControllerSnapshotTrackedT& get_right_controller() const override;
+    // Replay sessions do not drive hardware — haptic feedback is a no-op here.
+    void apply_left_haptic_feedback(float /*amplitude*/, float /*frequency_hz*/, float /*duration_s*/) const override
+    {
+    }
+    void apply_right_haptic_feedback(float /*amplitude*/, float /*frequency_hz*/, float /*duration_s*/) const override
+    {
+    }
+
+private:
+    ControllerSnapshotTrackedT left_tracked_;
+    ControllerSnapshotTrackedT right_tracked_;
+    std::unique_ptr<ControllerMcapViewers> mcap_viewers_;
+};
+
+} // namespace core

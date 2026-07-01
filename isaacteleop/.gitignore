@@ -1,0 +1,81 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# macOS
+.DS_Store
+
+# Node.js
+node_modules/
+package-lock.json
+
+# Build directories
+build/
+**/build/
+install/
+build.log
+# Python cache
+__pycache__/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+# Python virtual environments
+.venv/
+.venv-isaacteleop/
+venv/
+**/.venv/
+**/venv/
+
+# uv lock files.
+uv.lock
+
+# Compiled files
+*.o
+*.so
+*.a
+*.exe
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+compile_commands.json
+# Auto-downloaded from GitHub
+cmake/HunterGate.cmake
+cmake/Hunter/config-depthai.cmake
+# OAK plugin pulls DepthAI's vcpkg manifest at configure time (cmake/DepthAIVcpkgManifest.cmake);
+# we intentionally do not track our own vcpkg.json.
+/vcpkg.json
+
+# Python egg info
+*.egg-info/
+dist/
+*.egg
+
+# SPDX report
+project.spdx
+
+# robotic_grounding source bundle (cloned locally / in CI from
+# jiwenc-nv/v2d:retargeter; never committed -- repopulated deterministically
+# from deps/v2d/version.txt). The Teleop wheel build copies this subtree
+# into the wheel staging dir so [grounding] users get robotic_grounding
+# without a separate install. V2D source must NOT be tracked here.
+deps/v2d/src/
+deps/v2d/wheels/
+
+# Runtime device files injected by MCP server infrastructure
+.mcp.json
+
+apv_wuji
+avp_ee_hand.md
+cmd
+AGENTS.md
+custom.env
+web.env
+example_demo
+build-local/
+deps/cloudxr/webxr_client/helpers/react/CloudXRComponent.tsx
+deps/cloudxr/webxr_client/src/App.tsx
+deps/cloudxr/webxr_client/src/CloudXRUI.tsx
+examples/teleop/CMakeLists.txt
+examples/teleop/python/pyproject.toml

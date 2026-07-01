@@ -1,0 +1,66 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# ==============================================================================
+# InstallPythonExample.cmake
+# ==============================================================================
+# Macro to install a Python example directory with a generated pyproject.toml.
+#
+# Reads the source pyproject.toml (which stays tool-agnostic) and appends a
+# [tool.uv] block only to the installed copy so that `uv run` works out of the
+# box in the install tree.
+#
+# Usage:
+#   install_python_example(DESTINATION examples/oxr/python)
+#   install_python_example(DESTINATION examples/teleop_ros2/python
+#       EXTRA_UV_EXTRA_BUILD_DEPS "nlopt = [\"numpy\"]")
+# ==============================================================================
+
+macro(install_python_example)
+    cmake_parse_arguments(_IPE "" "DESTINATION;EXTRA_UV_EXTRA_BUILD_DEPS" "" ${ARGN})
+    if(NOT _IPE_DESTINATION)
+        message(FATAL_ERROR "install_python_example: DESTINATION is required")
+    endif()
+
+    # Installed example is intended to run against a locally built wheel, so
+    # required-environments must list only the current build arch.
+    if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+        set(_IPE_PLATFORM_MACHINE "aarch64")
+    else()
+        set(_IPE_PLATFORM_MACHINE "x86_64")
+    endif()
+
+    # Read the bare pyproject.toml and append uv configuration for the
+    # installed environment.
+    file(READ "${CMAKE_CURRENT_SOURCE_DIR}/python/pyproject.toml" _PYPROJECT_BASE)
+    set(_TOOL_UV_BLOCK "[tool.uv]
+find-links = [\"../../../wheels\"]
+python-preference = \"only-managed\"
+environments = [\"python_version == '${ISAAC_TELEOP_PYTHON_VERSION}'\"]
+required-environments = [\"sys_platform == 'linux' and platform_machine == '${_IPE_PLATFORM_MACHINE}'\"]
+")
+    if(_IPE_EXTRA_UV_EXTRA_BUILD_DEPS)
+        string(APPEND _TOOL_UV_BLOCK "
+[tool.uv.extra-build-dependencies]
+${_IPE_EXTRA_UV_EXTRA_BUILD_DEPS}
+")
+    endif()
+    file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/pyproject.toml"
+        "${_PYPROJECT_BASE}\n${_TOOL_UV_BLOCK}")
+
+    # Install generated pyproject.toml (with [tool.uv] appended)
+    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/pyproject.toml"
+        DESTINATION ${_IPE_DESTINATION}
+    )
+
+    # Install Python example sources
+    install(DIRECTORY python/
+        DESTINATION ${_IPE_DESTINATION}
+        FILES_MATCHING
+            PATTERN "*.py"
+            PATTERN "*.md"
+        PATTERN ".venv" EXCLUDE
+        PATTERN "__pycache__" EXCLUDE
+        PATTERN "*.pyc" EXCLUDE
+    )
+endmacro()

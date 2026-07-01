@@ -1,0 +1,52 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Setup CloudXR SDK
+description: Parse CloudXR versions from .env.default and download the CloudXR Runtime and Web SDKs.
+
+inputs:
+  ngc-api-key:
+    description: NGC API key for downloading CloudXR SDKs from private NGC.
+    required: true
+
+outputs:
+  runtime_version:
+    description: CloudXR Runtime SDK version from .env.default.
+    value: ${{ steps.parse.outputs.runtime_version }}
+  web_version:
+    description: CloudXR Web SDK version from .env.default.
+    value: ${{ steps.parse.outputs.web_version }}
+
+runs:
+  using: composite
+  steps:
+    - name: Parse CloudXR SDK versions from .env.default
+      id: parse
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        # Extract CloudXR SDK versions from .env.default.
+        CXR_RUNTIME_SDK_VERSION=$(grep -E '^CXR_RUNTIME_SDK_VERSION=.+' deps/cloudxr/.env.default | cut -d= -f2)
+        CXR_WEB_SDK_VERSION=$(grep -E '^CXR_WEB_SDK_VERSION=.+' deps/cloudxr/.env.default | cut -d= -f2)
+
+        echo "runtime_version=${CXR_RUNTIME_SDK_VERSION}" >> $GITHUB_OUTPUT
+        echo "web_version=${CXR_WEB_SDK_VERSION}" >> $GITHUB_OUTPUT
+        echo "CloudXR Runtime SDK version: ${CXR_RUNTIME_SDK_VERSION}"
+        echo "CloudXR Web SDK version: ${CXR_WEB_SDK_VERSION}"
+
+    - name: Download CloudXR Runtime SDK
+      shell: bash
+      env:
+        CXR_RUNTIME_SDK_VERSION: ${{ steps.parse.outputs.runtime_version }}
+        NGC_API_KEY: ${{ inputs.ngc-api-key }}
+      run: |
+        ./scripts/download_cloudxr_runtime_sdk.sh
+
+    - name: Download CloudXR Web SDK
+      shell: bash
+      env:
+        CXR_WEB_SDK_VERSION: ${{ steps.parse.outputs.web_version }}
+        NGC_API_KEY: ${{ inputs.ngc-api-key }}
+      run: |
+        ./scripts/download_cloudxr_sdk.sh

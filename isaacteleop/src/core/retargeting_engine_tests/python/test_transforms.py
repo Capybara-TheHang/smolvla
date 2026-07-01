@@ -1,0 +1,1161 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""
+Tests for transform utilities and transform retargeter nodes.
+
+Covers:
+- transform_utils: validate, decompose, position/orientation transforms
+- HeadTransform, HandTransform, ControllerTransform retargeter nodes
+- Optional inputs: propagation when absent, and absent/present toggling across calls
+"""
+
+import pytest
+import numpy as np
+import numpy.testing as npt
+
+from isaacteleop.retargeting_engine.interface import TensorGroup
+from isaacteleop.retargeting_engine.interface.tensor_group import OptionalTensorGroup
+from isaacteleop.retargeting_engine.tensor_types import (
+    HeadPose,
+    HeadPoseIndex,
+    HandInput,
+    ControllerInput,
+    TransformMatrix,
+    ControllerInputIndex,
+    HandInputIndex,
+    NUM_HAND_JOINTS,
+)
+from isaacteleop.retargeting_engine.utilities.transform_utils import (
+    validate_transform_matrix,
+    decompose_transform,
+    transform_position,
+    transform_positions_batch,
+    transform_orientation,
+    transform_orientations_batch,
+    _rotation_matrix_to_quat_xyzw,
+    _quat_multiply_xyzw,
+)
+from isaacteleop.retargeting_engine.utilities import (
+    HeadTransform,
+    HandTransform,
+    ControllerTransform,
+)
+
+
+# ============================================================================
+# Helpers
+# ============================================================================
+
+
+def _identity_4x4() -> np.ndarray:
+    return np.eye(4, dtype=np.float32)
+
+
+def _translation_4x4(tx: float, ty: float, tz: float) -> np.ndarray:
+    m = np.eye(4, dtype=np.float32)
+    m[:3, 3] = [tx, ty, tz]
+    return m
+
+
+def _rotation_z_90() -> np.ndarray:
+    """90-degree rotation about Z axis."""
+    m = np.eye(4, dtype=np.float32)
+    m[0, 0] = 0.0
+    m[0, 1] = -1.0
+    m[1, 0] = 1.0
+    m[1, 1] = 0.0
+    return m
+
+
+def _rotation_z_90_with_translation() -> np.ndarray:
+    """90-degree rotation about Z + translation (1, 2, 3)."""
+    m = _rotation_z_90()
+    m[:3, 3] = [1.0, 2.0, 3.0]
+    return m
+
+
+def _identity_quat_xyzw() -> np.ndarray:
+    return np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+
+
+def _make_transform_input(matrix: np.ndarray) -> TensorGroup:
+    """Build a TensorGroup for TransformMatrix from a numpy 4x4 array."""
+    tg = TensorGroup(TransformMatrix())
+    tg[0] = matrix
+    return tg
+
+
+def _run_retargeter(retargeter, inputs):
+    """Execute a retargeter using its callable interface."""
+    return retargeter(inputs)
+
+
+# ============================================================================
+# Tests: validate_transform_matrix
+# ============================================================================
+
+
+class TestValidateTransformMatrix:
+    def test_valid_identity(self):
+        result = validate_transform_matrix(np.eye(4))
+        assert result.shape == (4, 4)
+        npt.assert_array_almost_equal(result, np.eye(4))
+
+    def test_valid_transform(self):
+        m = _rotation_z_90_with_translation()
+        result = validate_transform_matrix(m)
+        assert result.dtype == np.float64
+        assert result.shape == (4, 4)
+
+    def test_wrong_shape(self):
+        with pytest.raises(ValueError, match="must be \\(4, 4\\)"):
+            validate_transform_matrix(np.eye(3))
+
+    def test_bad_bottom_row(self):
+        m = np.eye(4)
+        m[3, 3] = 2.0
+        with pytest.raises(ValueError, match="Bottom row"):
+            validate_transform_matrix(m)
+
+
+# ============================================================================
+# Tests: decompose_transform
+# ============================================================================
+
+
+class TestDecomposeTransform:
+    def test_identity(self):
+        R, t = decompose_transform(np.eye(4))
+        npt.assert_array_almost_equal(R, np.eye(3))
+        npt.assert_array_almost_equal(t, [0, 0, 0])
+
+    def test_translation_only(self):
+        R, t = decompose_transform(_translation_4x4(5, 6, 7))
+        npt.assert_array_almost_equal(R, np.eye(3))
+        npt.assert_array_almost_equal(t, [5, 6, 7])
+
+    def test_rotation_and_translation(self):
+        m = _rotation_z_90_with_translation()
+        R, t = decompose_transform(m)
+        npt.assert_array_almost_equal(t, [1, 2, 3])
+        # R should be a 90-degree Z rotation
+        npt.assert_array_almost_equal(R @ np.array([1, 0, 0]), [0, 1, 0], decimal=5)
+
+
+# ============================================================================
+# Tests: transform_position
+# ============================================================================
+
+
+class TestTransformPosition:
+    def test_identity(self):
+        pos = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+        expected = pos.copy()
+        transform_position(pos, np.eye(3), np.zeros(3))
+        npt.assert_array_almost_equal(pos, expected)
+
+    def test_translation(self):
+        pos = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        transform_position(pos, np.eye(3), np.array([10, 20, 30]))
+        npt.assert_array_almost_equal(pos, [11, 20, 30])
+
+    def test_rotation_z_90(self):
+        R, t = decompose_transform(_rotation_z_90())
+        pos = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        transform_position(pos, R, t)
+        npt.assert_array_almost_equal(pos, [0, 1, 0], decimal=5)
+
+    def test_preserves_dtype(self):
+        pos = np.array([1, 2, 3], dtype=np.float32)
+        transform_position(pos, np.eye(3), np.zeros(3))
+        assert pos.dtype == np.float32
+
+
+# ============================================================================
+# Tests: transform_positions_batch
+# ============================================================================
+
+
+class TestTransformPositionsBatch:
+    def test_batch_identity(self):
+        pos = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.float32)
+        expected = pos.copy()
+        transform_positions_batch(pos, np.eye(3), np.zeros(3))
+        npt.assert_array_almost_equal(pos, expected)
+
+    def test_batch_translation(self):
+        pos = np.zeros((3, 3), dtype=np.float32)
+        transform_positions_batch(pos, np.eye(3), np.array([1, 2, 3]))
+        expected = np.tile([1, 2, 3], (3, 1))
+        npt.assert_array_almost_equal(pos, expected)
+
+    def test_batch_rotation(self):
+        R, t = decompose_transform(_rotation_z_90())
+        pos = np.array([[1, 0, 0], [0, 1, 0]], dtype=np.float32)
+        transform_positions_batch(pos, R, t)
+        npt.assert_array_almost_equal(pos[0], [0, 1, 0], decimal=5)
+        npt.assert_array_almost_equal(pos[1], [-1, 0, 0], decimal=5)
+
+    def test_preserves_dtype(self):
+        pos = np.zeros((2, 3), dtype=np.float32)
+        transform_positions_batch(pos, np.eye(3), np.zeros(3))
+        assert pos.dtype == np.float32
+
+
+# ============================================================================
+# Tests: quaternion helpers
+# ============================================================================
+
+
+class TestQuaternionHelpers:
+    def test_identity_matrix_to_quat(self):
+        q = _rotation_matrix_to_quat_xyzw(np.eye(3))
+        npt.assert_array_almost_equal(q, [0, 0, 0, 1], decimal=5)
+
+    def test_z_90_matrix_to_quat(self):
+        R, _ = decompose_transform(_rotation_z_90())
+        q = _rotation_matrix_to_quat_xyzw(R)
+        # 90 deg about Z: quat = [0, 0, sin(45), cos(45)]
+        expected = np.array([0, 0, np.sin(np.pi / 4), np.cos(np.pi / 4)])
+        npt.assert_array_almost_equal(q, expected, decimal=5)
+
+    def test_quat_multiply_identity(self):
+        q = np.array([0.1, 0.2, 0.3, 0.9])
+        q = q / np.linalg.norm(q)
+        result = _quat_multiply_xyzw(np.array([0, 0, 0, 1.0]), q)
+        npt.assert_array_almost_equal(result, q, decimal=5)
+
+    def test_quat_multiply_inverse(self):
+        # q * q_conjugate = identity
+        q = np.array([0.1, 0.2, 0.3, 0.9])
+        q = q / np.linalg.norm(q)
+        q_conj = np.array([-q[0], -q[1], -q[2], q[3]])
+        result = _quat_multiply_xyzw(q, q_conj)
+        npt.assert_array_almost_equal(result, [0, 0, 0, 1], decimal=5)
+
+
+# ============================================================================
+# Tests: transform_orientation / transform_orientations_batch
+# ============================================================================
+
+
+class TestTransformOrientation:
+    def test_identity_rotation(self):
+        q = np.array([0.1, 0.2, 0.3, 0.9], dtype=np.float32)
+        q = q / np.linalg.norm(q)
+        expected = q.copy()
+        transform_orientation(q, np.eye(3))
+        npt.assert_array_almost_equal(q, expected, decimal=5)
+
+    def test_z_90_rotation(self):
+        R, _ = decompose_transform(_rotation_z_90())
+        q = _identity_quat_xyzw()
+        transform_orientation(q, R)
+        # Should match the Z-90 quaternion
+        expected = _rotation_matrix_to_quat_xyzw(R).astype(np.float32)
+        npt.assert_array_almost_equal(q, expected, decimal=5)
+
+    def test_preserves_dtype(self):
+        q = _identity_quat_xyzw()
+        transform_orientation(q, np.eye(3))
+        assert q.dtype == np.float32
+
+
+class TestTransformOrientationsBatch:
+    def test_batch_identity(self):
+        quats = np.tile(_identity_quat_xyzw(), (4, 1))
+        transform_orientations_batch(quats, np.eye(3))
+        for i in range(4):
+            npt.assert_array_almost_equal(quats[i], [0, 0, 0, 1], decimal=5)
+
+    def test_batch_z_90(self):
+        R, _ = decompose_transform(_rotation_z_90())
+        quats = np.tile(_identity_quat_xyzw(), (3, 1))
+        transform_orientations_batch(quats, R)
+        expected = _rotation_matrix_to_quat_xyzw(R).astype(np.float32)
+        for i in range(3):
+            npt.assert_array_almost_equal(quats[i], expected, decimal=5)
+
+    def test_preserves_shape_and_dtype(self):
+        quats = np.zeros((5, 4), dtype=np.float32)
+        quats[:, 3] = 1.0
+        transform_orientations_batch(quats, np.eye(3))
+        assert quats.shape == (5, 4)
+        assert quats.dtype == np.float32
+
+
+# ============================================================================
+# Tests: HeadTransform node
+# ============================================================================
+
+
+class TestHeadTransform:
+    def _make_head_input(self, position, orientation, is_valid=True):
+        tg = TensorGroup(HeadPose())
+        tg[HeadPoseIndex.POSITION] = np.array(position, dtype=np.float32)
+        tg[HeadPoseIndex.ORIENTATION] = np.array(orientation, dtype=np.float32)
+        tg[HeadPoseIndex.IS_VALID] = is_valid
+        return tg
+
+    def test_identity_transform(self):
+        node = HeadTransform("head_xform")
+        head_in = self._make_head_input([1, 2, 3], [0, 0, 0, 1])
+        xform_in = _make_transform_input(_identity_4x4())
+        result = _run_retargeter(node, {"head": head_in, "transform": xform_in})
+        out = result["head"]
+        npt.assert_array_almost_equal(
+            np.from_dlpack(out[HeadPoseIndex.POSITION]), [1, 2, 3], decimal=5
+        )
+        npt.assert_array_almost_equal(
+            np.from_dlpack(out[HeadPoseIndex.ORIENTATION]), [0, 0, 0, 1], decimal=5
+        )
+        assert out[HeadPoseIndex.IS_VALID] is True
+
+    def test_translation_transform(self):
+        node = HeadTransform("head_xform")
+        head_in = self._make_head_input([1, 0, 0], [0, 0, 0, 1])
+        xform_in = _make_transform_input(_translation_4x4(10, 20, 30))
+        result = _run_retargeter(node, {"head": head_in, "transform": xform_in})
+        out = result["head"]
+        npt.assert_array_almost_equal(
+            np.from_dlpack(out[HeadPoseIndex.POSITION]), [11, 20, 30], decimal=5
+        )
+        # Orientation unchanged by pure translation
+        npt.assert_array_almost_equal(
+            np.from_dlpack(out[HeadPoseIndex.ORIENTATION]), [0, 0, 0, 1], decimal=5
+        )
+
+    def test_rotation_transform(self):
+        node = HeadTransform("head_xform")
+        head_in = self._make_head_input([1, 0, 0], [0, 0, 0, 1])
+        xform_in = _make_transform_input(_rotation_z_90())
+        result = _run_retargeter(node, {"head": head_in, "transform": xform_in})
+        out = result["head"]
+        npt.assert_array_almost_equal(
+            np.from_dlpack(out[HeadPoseIndex.POSITION]), [0, 1, 0], decimal=5
+        )
+
+    def test_passthrough_fields_preserved(self):
+        node = HeadTransform("head_xform")
+        head_in = self._make_head_input([0, 0, 0], [0, 0, 0, 1], is_valid=False)
+        xform_in = _make_transform_input(_rotation_z_90_with_translation())
+        result = _run_retargeter(node, {"head": head_in, "transform": xform_in})
+        out = result["head"]
+        assert out[HeadPoseIndex.IS_VALID] is False
+
+
+# ============================================================================
+# Tests: ControllerTransform node
+# ============================================================================
+
+
+class TestControllerTransform:
+    def _make_controller_input(
+        self, grip_pos, grip_ori, aim_pos, aim_ori, primary_click=0.0
+    ):
+        tg = TensorGroup(ControllerInput())
+        tg[ControllerInputIndex.GRIP_POSITION] = np.array(grip_pos, dtype=np.float32)
+        tg[ControllerInputIndex.GRIP_ORIENTATION] = np.array(grip_ori, dtype=np.float32)
+        tg[ControllerInputIndex.GRIP_IS_VALID] = True
+        tg[ControllerInputIndex.AIM_POSITION] = np.array(aim_pos, dtype=np.float32)
+        tg[ControllerInputIndex.AIM_ORIENTATION] = np.array(aim_ori, dtype=np.float32)
+        tg[ControllerInputIndex.AIM_IS_VALID] = True
+        tg[ControllerInputIndex.PRIMARY_CLICK] = primary_click
+        tg[ControllerInputIndex.SECONDARY_CLICK] = 0.0
+        tg[ControllerInputIndex.THUMBSTICK_CLICK] = 0.0
+        tg[ControllerInputIndex.MENU_CLICK] = 0.0
+        tg[ControllerInputIndex.THUMBSTICK_X] = 0.0
+        tg[ControllerInputIndex.THUMBSTICK_Y] = 0.0
+        tg[ControllerInputIndex.SQUEEZE_VALUE] = 0.0
+        tg[ControllerInputIndex.TRIGGER_VALUE] = 0.0
+        return tg
+
+    def test_identity_transform(self):
+        node = ControllerTransform("controller_xform")
+        id_quat = [0, 0, 0, 1]
+        left = self._make_controller_input([1, 0, 0], id_quat, [2, 0, 0], id_quat)
+        right = self._make_controller_input([3, 0, 0], id_quat, [4, 0, 0], id_quat)
+        xform = _make_transform_input(_identity_4x4())
+
+        result = _run_retargeter(
+            node,
+            {
+                "controller_left": left,
+                "controller_right": right,
+                "transform": xform,
+            },
+        )
+
+        out_l = result["controller_left"]
+        npt.assert_array_almost_equal(
+            np.from_dlpack(out_l[ControllerInputIndex.GRIP_POSITION]),
+            [1, 0, 0],
+            decimal=5,
+        )
+        out_r = result["controller_right"]
+        npt.assert_array_almost_equal(
+            np.from_dlpack(out_r[ControllerInputIndex.GRIP_POSITION]),
+            [3, 0, 0],
+            decimal=5,
+        )
+
+    def test_translation_transforms_both_poses(self):
+        node = ControllerTransform("controller_xform")
+        id_quat = [0, 0, 0, 1]
+        left = self._make_controller_input([1, 0, 0], id_quat, [2, 0, 0], id_quat)
+        right = self._make_controller_input([0, 0, 0], id_quat, [0, 0, 0], id_quat)
+        xform = _make_transform_input(_translation_4x4(10, 20, 30))
+
+        result = _run_retargeter(
+            node,
+            {
+                "controller_left": left,
+                "controller_right": right,
+                "transform": xform,
+            },
+        )
+
+        out_l = result["controller_left"]
+        npt.assert_array_almost_equal(
+            np.from_dlpack(out_l[ControllerInputIndex.GRIP_POSITION]),
+            [11, 20, 30],
+            decimal=5,
+        )
+        npt.assert_array_almost_equal(
+            np.from_dlpack(out_l[ControllerInputIndex.AIM_POSITION]),
+            [12, 20, 30],
+            decimal=5,
+        )
+
+    def test_button_fields_preserved(self):
+        node = ControllerTransform("controller_xform")
+        id_quat = [0, 0, 0, 1]
+        left = self._make_controller_input(
+            [0, 0, 0],
+            id_quat,
+            [0, 0, 0],
+            id_quat,
+            primary_click=1.0,
+        )
+        right = self._make_controller_input([0, 0, 0], id_quat, [0, 0, 0], id_quat)
+        xform = _make_transform_input(_rotation_z_90_with_translation())
+
+        result = _run_retargeter(
+            node,
+            {
+                "controller_left": left,
+                "controller_right": right,
+                "transform": xform,
+            },
+        )
+
+        out_l = result["controller_left"]
+        assert float(out_l[ControllerInputIndex.PRIMARY_CLICK]) == 1.0
+
+    def test_rotation_transforms_grip_and_aim(self):
+        node = ControllerTransform("controller_xform")
+        id_quat = [0, 0, 0, 1]
+        left = self._make_controller_input([1, 0, 0], id_quat, [0, 1, 0], id_quat)
+        right = self._make_controller_input([0, 0, 0], id_quat, [0, 0, 0], id_quat)
+        xform = _make_transform_input(_rotation_z_90())
+
+        result = _run_retargeter(
+            node,
+            {
+                "controller_left": left,
+                "controller_right": right,
+                "transform": xform,
+            },
+        )
+
+        out_l = result["controller_left"]
+        npt.assert_array_almost_equal(
+            np.from_dlpack(out_l[ControllerInputIndex.GRIP_POSITION]),
+            [0, 1, 0],
+            decimal=5,
+        )
+        npt.assert_array_almost_equal(
+            np.from_dlpack(out_l[ControllerInputIndex.AIM_POSITION]),
+            [-1, 0, 0],
+            decimal=5,
+        )
+
+
+# ============================================================================
+# Tests: HandTransform node
+# ============================================================================
+
+
+class TestHandTransform:
+    def _make_hand_input(self, joint_offset=0.0):
+        tg = TensorGroup(HandInput())
+        positions = np.zeros((NUM_HAND_JOINTS, 3), dtype=np.float32)
+        positions[:, 0] = np.arange(NUM_HAND_JOINTS, dtype=np.float32) + joint_offset
+        orientations = np.zeros((NUM_HAND_JOINTS, 4), dtype=np.float32)
+        orientations[:, 3] = 1.0  # identity quaternions
+        radii = np.ones(NUM_HAND_JOINTS, dtype=np.float32) * 0.01
+        valid = np.ones(NUM_HAND_JOINTS, dtype=np.uint8)
+
+        tg[HandInputIndex.JOINT_POSITIONS] = positions
+        tg[HandInputIndex.JOINT_ORIENTATIONS] = orientations
+        tg[HandInputIndex.JOINT_RADII] = radii
+        tg[HandInputIndex.JOINT_VALID] = valid
+        return tg
+
+    def test_identity_transform(self):
+        node = HandTransform("hand_xform")
+        left = self._make_hand_input(joint_offset=0.0)
+        right = self._make_hand_input(joint_offset=100.0)
+        xform = _make_transform_input(_identity_4x4())
+
+        result = _run_retargeter(
+            node,
+            {
+                "hand_left": left,
+                "hand_right": right,
+                "transform": xform,
+            },
+        )
+
+        out_l = result["hand_left"]
+        out_pos = np.from_dlpack(out_l[HandInputIndex.JOINT_POSITIONS])
+        in_pos = np.from_dlpack(left[HandInputIndex.JOINT_POSITIONS])
+        npt.assert_array_almost_equal(out_pos, in_pos, decimal=5)
+
+    def test_translation_transforms_all_joints(self):
+        node = HandTransform("hand_xform")
+        left = self._make_hand_input()
+        right = self._make_hand_input()
+        xform = _make_transform_input(_translation_4x4(1, 2, 3))
+
+        result = _run_retargeter(
+            node,
+            {
+                "hand_left": left,
+                "hand_right": right,
+                "transform": xform,
+            },
+        )
+
+        out_l = result["hand_left"]
+        out_pos = np.from_dlpack(out_l[HandInputIndex.JOINT_POSITIONS])
+        in_pos = np.from_dlpack(left[HandInputIndex.JOINT_POSITIONS])
+        # Every joint should have translation added
+        expected = in_pos + np.array([1, 2, 3], dtype=np.float32)
+        npt.assert_array_almost_equal(out_pos, expected, decimal=5)
+
+    def test_passthrough_fields_preserved(self):
+        node = HandTransform("hand_xform")
+        left = self._make_hand_input()
+        right = self._make_hand_input()
+        xform = _make_transform_input(_rotation_z_90_with_translation())
+
+        result = _run_retargeter(
+            node,
+            {
+                "hand_left": left,
+                "hand_right": right,
+                "transform": xform,
+            },
+        )
+
+        out_l = result["hand_left"]
+        out_r = result["hand_right"]
+
+        # Radii and validity should be unchanged for both hands
+        expected_radii = np.ones(NUM_HAND_JOINTS, dtype=np.float32) * 0.01
+        npt.assert_array_almost_equal(
+            np.from_dlpack(out_l[HandInputIndex.JOINT_RADII]), expected_radii, decimal=5
+        )
+        npt.assert_array_almost_equal(
+            np.from_dlpack(out_r[HandInputIndex.JOINT_RADII]), expected_radii, decimal=5
+        )
+
+    def test_rotation_transforms_positions_and_orientations(self):
+        node = HandTransform("hand_xform")
+        left = self._make_hand_input()
+        right = self._make_hand_input()
+        xform = _make_transform_input(_rotation_z_90())
+
+        result = _run_retargeter(
+            node,
+            {
+                "hand_left": left,
+                "hand_right": right,
+                "transform": xform,
+            },
+        )
+
+        out_l = result["hand_left"]
+        out_pos = np.from_dlpack(out_l[HandInputIndex.JOINT_POSITIONS])
+        in_pos = np.from_dlpack(left[HandInputIndex.JOINT_POSITIONS])
+
+        # Z-90 rotation: (x, y, z) -> (-y, x, z)
+        npt.assert_array_almost_equal(out_pos[:, 0], -in_pos[:, 1], decimal=5)
+        npt.assert_array_almost_equal(out_pos[:, 1], in_pos[:, 0], decimal=5)
+        npt.assert_array_almost_equal(out_pos[:, 2], in_pos[:, 2], decimal=5)
+
+        # Orientations should all be the Z-90 quaternion (since inputs were identity)
+        out_ori = np.from_dlpack(out_l[HandInputIndex.JOINT_ORIENTATIONS])
+        R, _ = decompose_transform(_rotation_z_90())
+        expected_q = _rotation_matrix_to_quat_xyzw(R).astype(np.float32)
+        for i in range(NUM_HAND_JOINTS):
+            npt.assert_array_almost_equal(out_ori[i], expected_q, decimal=5)
+
+
+# ============================================================================
+# Tests: Output-to-input aliasing (regression)
+# ============================================================================
+
+
+class TestHeadTransformNoAliasing:
+    """Verify HeadTransform outputs do not alias inputs."""
+
+    def test_mutating_output_position_does_not_affect_input(self):
+        node = HeadTransform("head_xform")
+        head_in = TensorGroup(HeadPose())
+        head_in[HeadPoseIndex.POSITION] = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+        head_in[HeadPoseIndex.ORIENTATION] = np.array(
+            [0.0, 0.0, 0.0, 1.0], dtype=np.float32
+        )
+        head_in[HeadPoseIndex.IS_VALID] = True
+        xform_in = _make_transform_input(_identity_4x4())
+
+        # Save a copy of the original input values
+        orig_pos = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+        orig_ori = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+
+        result = _run_retargeter(node, {"head": head_in, "transform": xform_in})
+        out = result["head"]
+
+        # Mutate the output position in-place
+        out_pos = np.from_dlpack(out[HeadPoseIndex.POSITION])
+        out_pos[:] = [99.0, 99.0, 99.0]
+
+        # Mutate the output orientation in-place
+        out_ori = np.from_dlpack(out[HeadPoseIndex.ORIENTATION])
+        out_ori[:] = [1.0, 1.0, 1.0, 0.0]
+
+        # Original input must be unchanged
+        npt.assert_array_equal(
+            np.from_dlpack(head_in[HeadPoseIndex.POSITION]), orig_pos
+        )
+        npt.assert_array_equal(
+            np.from_dlpack(head_in[HeadPoseIndex.ORIENTATION]), orig_ori
+        )
+
+
+class TestControllerTransformNoAliasing:
+    """Verify ControllerTransform outputs do not alias inputs."""
+
+    def _make_controller(self, grip_pos):
+        tg = TensorGroup(ControllerInput())
+        id_quat = np.array([0, 0, 0, 1], dtype=np.float32)
+        tg[ControllerInputIndex.GRIP_POSITION] = np.array(grip_pos, dtype=np.float32)
+        tg[ControllerInputIndex.GRIP_ORIENTATION] = id_quat.copy()
+        tg[ControllerInputIndex.GRIP_IS_VALID] = True
+        tg[ControllerInputIndex.AIM_POSITION] = np.zeros(3, dtype=np.float32)
+        tg[ControllerInputIndex.AIM_ORIENTATION] = id_quat.copy()
+        tg[ControllerInputIndex.AIM_IS_VALID] = True
+        tg[ControllerInputIndex.PRIMARY_CLICK] = 0.5
+        tg[ControllerInputIndex.SECONDARY_CLICK] = 0.0
+        tg[ControllerInputIndex.THUMBSTICK_CLICK] = 0.0
+        tg[ControllerInputIndex.MENU_CLICK] = 0.0
+        tg[ControllerInputIndex.THUMBSTICK_X] = 0.0
+        tg[ControllerInputIndex.THUMBSTICK_Y] = 0.0
+        tg[ControllerInputIndex.SQUEEZE_VALUE] = 0.0
+        tg[ControllerInputIndex.TRIGGER_VALUE] = 0.0
+        return tg
+
+    def test_mutating_output_does_not_affect_input(self):
+        node = ControllerTransform("controller_xform")
+        left = self._make_controller([1, 2, 3])
+        right = self._make_controller([4, 5, 6])
+        xform = _make_transform_input(_identity_4x4())
+
+        orig_grip = np.array([1, 2, 3], dtype=np.float32)
+
+        result = _run_retargeter(
+            node,
+            {
+                "controller_left": left,
+                "controller_right": right,
+                "transform": xform,
+            },
+        )
+
+        out_l = result["controller_left"]
+
+        # Mutate output grip position in-place
+        out_grip = np.from_dlpack(out_l[ControllerInputIndex.GRIP_POSITION])
+        out_grip[:] = [99, 99, 99]
+
+        # Original input must be unchanged
+        npt.assert_array_equal(
+            np.from_dlpack(left[ControllerInputIndex.GRIP_POSITION]), orig_grip
+        )
+
+
+class TestHandTransformNoAliasing:
+    """Verify HandTransform outputs do not alias inputs."""
+
+    def test_mutating_output_does_not_affect_input(self):
+        node = HandTransform("hand_xform")
+
+        left = TensorGroup(HandInput())
+        positions = np.ones((NUM_HAND_JOINTS, 3), dtype=np.float32)
+        orientations = np.zeros((NUM_HAND_JOINTS, 4), dtype=np.float32)
+        orientations[:, 3] = 1.0
+        radii = np.ones(NUM_HAND_JOINTS, dtype=np.float32) * 0.01
+        valid = np.ones(NUM_HAND_JOINTS, dtype=np.uint8)
+        left[HandInputIndex.JOINT_POSITIONS] = positions
+        left[HandInputIndex.JOINT_ORIENTATIONS] = orientations
+        left[HandInputIndex.JOINT_RADII] = radii
+        left[HandInputIndex.JOINT_VALID] = valid
+
+        right = TensorGroup(HandInput())
+        right[HandInputIndex.JOINT_POSITIONS] = positions.copy()
+        right[HandInputIndex.JOINT_ORIENTATIONS] = orientations.copy()
+        right[HandInputIndex.JOINT_RADII] = radii.copy()
+        right[HandInputIndex.JOINT_VALID] = valid.copy()
+
+        xform = _make_transform_input(_identity_4x4())
+
+        orig_radii = radii.copy()
+        orig_positions = positions.copy()
+
+        result = _run_retargeter(
+            node,
+            {
+                "hand_left": left,
+                "hand_right": right,
+                "transform": xform,
+            },
+        )
+
+        out_l = result["hand_left"]
+
+        # Mutate output radii (a passthrough field) in-place
+        out_radii = np.from_dlpack(out_l[HandInputIndex.JOINT_RADII])
+        out_radii[:] = 999.0
+
+        # Mutate output positions (a transformed field) in-place
+        out_pos = np.from_dlpack(out_l[HandInputIndex.JOINT_POSITIONS])
+        out_pos[:] = 999.0
+
+        # Original input must be unchanged
+        npt.assert_array_equal(
+            np.from_dlpack(left[HandInputIndex.JOINT_RADII]), orig_radii
+        )
+        npt.assert_array_equal(
+            np.from_dlpack(left[HandInputIndex.JOINT_POSITIONS]), orig_positions
+        )
+
+
+# ============================================================================
+# Tests: Optional (is_none) propagation through transforms
+# ============================================================================
+
+
+class TestControllerTransformOptionalPropagation:
+    """Verify ControllerTransform propagates absent inputs to absent outputs."""
+
+    def _make_active_controller(self):
+        tg = TensorGroup(ControllerInput())
+        id_quat = np.array([0, 0, 0, 1], dtype=np.float32)
+        tg[ControllerInputIndex.GRIP_POSITION] = np.array([1, 2, 3], dtype=np.float32)
+        tg[ControllerInputIndex.GRIP_ORIENTATION] = id_quat.copy()
+        tg[ControllerInputIndex.GRIP_IS_VALID] = True
+        tg[ControllerInputIndex.AIM_POSITION] = np.zeros(3, dtype=np.float32)
+        tg[ControllerInputIndex.AIM_ORIENTATION] = id_quat.copy()
+        tg[ControllerInputIndex.AIM_IS_VALID] = True
+        tg[ControllerInputIndex.PRIMARY_CLICK] = 0.0
+        tg[ControllerInputIndex.SECONDARY_CLICK] = 0.0
+        tg[ControllerInputIndex.THUMBSTICK_CLICK] = 0.0
+        tg[ControllerInputIndex.MENU_CLICK] = 0.0
+        tg[ControllerInputIndex.THUMBSTICK_X] = 0.0
+        tg[ControllerInputIndex.THUMBSTICK_Y] = 0.0
+        tg[ControllerInputIndex.SQUEEZE_VALUE] = 0.0
+        tg[ControllerInputIndex.TRIGGER_VALUE] = 0.5
+        return tg
+
+    def test_both_active(self):
+        node = ControllerTransform("xform")
+        left = self._make_active_controller()
+        right = self._make_active_controller()
+        xform = _make_transform_input(_identity_4x4())
+
+        result = _run_retargeter(
+            node,
+            {"controller_left": left, "controller_right": right, "transform": xform},
+        )
+
+        assert not result["controller_left"].is_none
+        assert not result["controller_right"].is_none
+
+    def test_absent_left_propagates(self):
+        node = ControllerTransform("xform")
+        left = OptionalTensorGroup(ControllerInput())
+        right = self._make_active_controller()
+        xform = _make_transform_input(_identity_4x4())
+
+        result = _run_retargeter(
+            node,
+            {"controller_left": left, "controller_right": right, "transform": xform},
+        )
+
+        assert result["controller_left"].is_none
+        assert not result["controller_right"].is_none
+
+    def test_both_absent(self):
+        node = ControllerTransform("xform")
+        left = OptionalTensorGroup(ControllerInput())
+        right = OptionalTensorGroup(ControllerInput())
+        xform = _make_transform_input(_identity_4x4())
+
+        result = _run_retargeter(
+            node,
+            {"controller_left": left, "controller_right": right, "transform": xform},
+        )
+
+        assert result["controller_left"].is_none
+        assert result["controller_right"].is_none
+
+    def test_absent_output_raises_on_read(self):
+        node = ControllerTransform("xform")
+        left = OptionalTensorGroup(ControllerInput())
+        right = self._make_active_controller()
+        xform = _make_transform_input(_identity_4x4())
+
+        result = _run_retargeter(
+            node,
+            {"controller_left": left, "controller_right": right, "transform": xform},
+        )
+
+        with pytest.raises(ValueError, match="absent"):
+            _ = result["controller_left"][ControllerInputIndex.GRIP_POSITION]
+
+
+class TestHandTransformOptionalPropagation:
+    """Verify HandTransform propagates absent inputs to absent outputs."""
+
+    def _make_active_hand(self):
+        tg = TensorGroup(HandInput())
+        tg[HandInputIndex.JOINT_POSITIONS] = np.zeros(
+            (NUM_HAND_JOINTS, 3), dtype=np.float32
+        )
+        tg[HandInputIndex.JOINT_ORIENTATIONS] = np.tile(
+            np.array([0, 0, 0, 1], dtype=np.float32), (NUM_HAND_JOINTS, 1)
+        )
+        tg[HandInputIndex.JOINT_RADII] = np.ones(NUM_HAND_JOINTS, dtype=np.float32)
+        tg[HandInputIndex.JOINT_VALID] = np.ones(NUM_HAND_JOINTS, dtype=np.uint8)
+        return tg
+
+    def test_both_active(self):
+        node = HandTransform("xform")
+        left = self._make_active_hand()
+        right = self._make_active_hand()
+        xform = _make_transform_input(_identity_4x4())
+
+        result = _run_retargeter(
+            node,
+            {"hand_left": left, "hand_right": right, "transform": xform},
+        )
+
+        assert not result["hand_left"].is_none
+        assert not result["hand_right"].is_none
+
+    def test_absent_left_propagates(self):
+        node = HandTransform("xform")
+        left = OptionalTensorGroup(HandInput())
+        right = self._make_active_hand()
+        xform = _make_transform_input(_identity_4x4())
+
+        result = _run_retargeter(
+            node,
+            {"hand_left": left, "hand_right": right, "transform": xform},
+        )
+
+        assert result["hand_left"].is_none
+        assert not result["hand_right"].is_none
+
+    def test_both_absent(self):
+        node = HandTransform("xform")
+        left = OptionalTensorGroup(HandInput())
+        right = OptionalTensorGroup(HandInput())
+        xform = _make_transform_input(_identity_4x4())
+
+        result = _run_retargeter(
+            node,
+            {"hand_left": left, "hand_right": right, "transform": xform},
+        )
+
+        assert result["hand_left"].is_none
+        assert result["hand_right"].is_none
+
+    def test_absent_output_raises_on_read(self):
+        node = HandTransform("xform")
+        left = OptionalTensorGroup(HandInput())
+        right = self._make_active_hand()
+        xform = _make_transform_input(_identity_4x4())
+
+        result = _run_retargeter(
+            node,
+            {"hand_left": left, "hand_right": right, "transform": xform},
+        )
+
+        with pytest.raises(ValueError, match="absent"):
+            _ = result["hand_left"][HandInputIndex.JOINT_POSITIONS]
+
+
+class TestHeadTransformOptionalPropagation:
+    """Verify HeadTransform propagates absent inputs to absent outputs."""
+
+    def _make_active_head(self):
+        tg = TensorGroup(HeadPose())
+        tg[HeadPoseIndex.POSITION] = np.array([1, 2, 3], dtype=np.float32)
+        tg[HeadPoseIndex.ORIENTATION] = np.array([0, 0, 0, 1], dtype=np.float32)
+        tg[HeadPoseIndex.IS_VALID] = True
+        return tg
+
+    def test_output_spec_is_optional(self):
+        node = HeadTransform("xform")
+        for gt in node.output_spec().values():
+            assert gt.is_optional
+
+    def test_input_spec_head_is_optional(self):
+        node = HeadTransform("xform")
+        assert node.input_spec()["head"].is_optional
+        assert not node.input_spec()["transform"].is_optional
+
+    def test_active_head(self):
+        node = HeadTransform("xform")
+        head = self._make_active_head()
+        xform = _make_transform_input(_identity_4x4())
+
+        result = _run_retargeter(node, {"head": head, "transform": xform})
+
+        assert not result["head"].is_none
+
+    def test_absent_head_propagates(self):
+        node = HeadTransform("xform")
+        head = OptionalTensorGroup(HeadPose())
+        xform = _make_transform_input(_identity_4x4())
+
+        result = _run_retargeter(node, {"head": head, "transform": xform})
+
+        assert result["head"].is_none
+
+    def test_absent_output_raises_on_read(self):
+        node = HeadTransform("xform")
+        head = OptionalTensorGroup(HeadPose())
+        xform = _make_transform_input(_identity_4x4())
+
+        result = _run_retargeter(node, {"head": head, "transform": xform})
+
+        with pytest.raises(ValueError, match="absent"):
+            _ = result["head"][HeadPoseIndex.POSITION]
+
+
+class TestTransformOptionalNoneToggle:
+    """
+    Optional inputs alternate absent/present across successive calls.
+
+    Ensures no stale state: after ``None``, a later present input still gets
+    the correct transform, and vice versa.
+    """
+
+    def test_head_transform_absent_present_cycle(self) -> None:
+        node = HeadTransform("head_toggle")
+        xform_90 = _make_transform_input(_rotation_z_90())
+        xform_id = _make_transform_input(_identity_4x4())
+        absent = OptionalTensorGroup(HeadPose())
+
+        r1 = _run_retargeter(node, {"head": absent, "transform": xform_id})
+        assert r1["head"].is_none
+
+        active = TensorGroup(HeadPose())
+        active[HeadPoseIndex.POSITION] = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        active[HeadPoseIndex.ORIENTATION] = np.array(
+            [0.0, 0.0, 0.0, 1.0], dtype=np.float32
+        )
+        active[HeadPoseIndex.IS_VALID] = True
+
+        r2 = _run_retargeter(node, {"head": active, "transform": xform_90})
+        assert not r2["head"].is_none
+        npt.assert_array_almost_equal(
+            np.from_dlpack(r2["head"][HeadPoseIndex.POSITION]),
+            [0.0, 1.0, 0.0],
+            decimal=5,
+        )
+
+        r3 = _run_retargeter(node, {"head": absent, "transform": xform_id})
+        assert r3["head"].is_none
+
+        r4 = _run_retargeter(node, {"head": active, "transform": xform_id})
+        assert not r4["head"].is_none
+        npt.assert_array_almost_equal(
+            np.from_dlpack(r4["head"][HeadPoseIndex.POSITION]),
+            [1.0, 0.0, 0.0],
+            decimal=5,
+        )
+
+    def test_controller_transform_left_optional_toggles(self) -> None:
+        node = ControllerTransform("ctrl_toggle")
+        xform_90 = _make_transform_input(_rotation_z_90())
+        xform_id = _make_transform_input(_identity_4x4())
+        left_absent = OptionalTensorGroup(ControllerInput())
+        id_quat = np.array([0.0, 0.0, 0.0, 1.0], dtype=np.float32)
+
+        def _active_left_grip_1_0_0() -> TensorGroup:
+            tg = TensorGroup(ControllerInput())
+            tg[ControllerInputIndex.GRIP_POSITION] = np.array(
+                [1.0, 0.0, 0.0], dtype=np.float32
+            )
+            tg[ControllerInputIndex.GRIP_ORIENTATION] = id_quat.copy()
+            tg[ControllerInputIndex.GRIP_IS_VALID] = True
+            tg[ControllerInputIndex.AIM_POSITION] = np.zeros(3, dtype=np.float32)
+            tg[ControllerInputIndex.AIM_ORIENTATION] = id_quat.copy()
+            tg[ControllerInputIndex.AIM_IS_VALID] = True
+            tg[ControllerInputIndex.PRIMARY_CLICK] = 0.0
+            tg[ControllerInputIndex.SECONDARY_CLICK] = 0.0
+            tg[ControllerInputIndex.THUMBSTICK_CLICK] = 0.0
+            tg[ControllerInputIndex.MENU_CLICK] = 0.0
+            tg[ControllerInputIndex.THUMBSTICK_X] = 0.0
+            tg[ControllerInputIndex.THUMBSTICK_Y] = 0.0
+            tg[ControllerInputIndex.SQUEEZE_VALUE] = 0.0
+            tg[ControllerInputIndex.TRIGGER_VALUE] = 0.5
+            return tg
+
+        right = TensorGroup(ControllerInput())
+        right[ControllerInputIndex.GRIP_POSITION] = np.array(
+            [1.0, 2.0, 3.0], dtype=np.float32
+        )
+        right[ControllerInputIndex.GRIP_ORIENTATION] = id_quat.copy()
+        right[ControllerInputIndex.GRIP_IS_VALID] = True
+        right[ControllerInputIndex.AIM_POSITION] = np.zeros(3, dtype=np.float32)
+        right[ControllerInputIndex.AIM_ORIENTATION] = id_quat.copy()
+        right[ControllerInputIndex.AIM_IS_VALID] = True
+        right[ControllerInputIndex.PRIMARY_CLICK] = 0.0
+        right[ControllerInputIndex.SECONDARY_CLICK] = 0.0
+        right[ControllerInputIndex.THUMBSTICK_CLICK] = 0.0
+        right[ControllerInputIndex.MENU_CLICK] = 0.0
+        right[ControllerInputIndex.THUMBSTICK_X] = 0.0
+        right[ControllerInputIndex.THUMBSTICK_Y] = 0.0
+        right[ControllerInputIndex.SQUEEZE_VALUE] = 0.0
+        right[ControllerInputIndex.TRIGGER_VALUE] = 0.5
+
+        r1 = _run_retargeter(
+            node,
+            {
+                "controller_left": left_absent,
+                "controller_right": right,
+                "transform": xform_id,
+            },
+        )
+        assert r1["controller_left"].is_none
+        assert not r1["controller_right"].is_none
+
+        left = _active_left_grip_1_0_0()
+        r2 = _run_retargeter(
+            node,
+            {
+                "controller_left": left,
+                "controller_right": right,
+                "transform": xform_90,
+            },
+        )
+        assert not r2["controller_left"].is_none
+        npt.assert_array_almost_equal(
+            np.from_dlpack(r2["controller_left"][ControllerInputIndex.GRIP_POSITION]),
+            [0.0, 1.0, 0.0],
+            decimal=5,
+        )
+
+        r3 = _run_retargeter(
+            node,
+            {
+                "controller_left": left_absent,
+                "controller_right": right,
+                "transform": xform_id,
+            },
+        )
+        assert r3["controller_left"].is_none
+
+        r4 = _run_retargeter(
+            node,
+            {
+                "controller_left": _active_left_grip_1_0_0(),
+                "controller_right": right,
+                "transform": xform_id,
+            },
+        )
+        npt.assert_array_almost_equal(
+            np.from_dlpack(r4["controller_left"][ControllerInputIndex.GRIP_POSITION]),
+            [1.0, 0.0, 0.0],
+            decimal=5,
+        )
+
+    def test_hand_transform_left_optional_toggles(self) -> None:
+        node = HandTransform("hand_toggle")
+        xform_90 = _make_transform_input(_rotation_z_90())
+        xform_id = _make_transform_input(_identity_4x4())
+        left_absent = OptionalTensorGroup(HandInput())
+
+        def _active_left_joint0_1_0_0() -> TensorGroup:
+            tg = TensorGroup(HandInput())
+            positions = np.zeros((NUM_HAND_JOINTS, 3), dtype=np.float32)
+            positions[0] = [1.0, 0.0, 0.0]
+            orientations = np.zeros((NUM_HAND_JOINTS, 4), dtype=np.float32)
+            orientations[:, 3] = 1.0
+            tg[HandInputIndex.JOINT_POSITIONS] = positions
+            tg[HandInputIndex.JOINT_ORIENTATIONS] = orientations
+            tg[HandInputIndex.JOINT_RADII] = (
+                np.ones(NUM_HAND_JOINTS, dtype=np.float32) * 0.01
+            )
+            tg[HandInputIndex.JOINT_VALID] = np.ones(NUM_HAND_JOINTS, dtype=np.uint8)
+            return tg
+
+        right = TensorGroup(HandInput())
+        right[HandInputIndex.JOINT_POSITIONS] = np.zeros(
+            (NUM_HAND_JOINTS, 3), dtype=np.float32
+        )
+        right[HandInputIndex.JOINT_ORIENTATIONS] = np.tile(
+            np.array([0, 0, 0, 1], dtype=np.float32), (NUM_HAND_JOINTS, 1)
+        )
+        right[HandInputIndex.JOINT_RADII] = np.ones(NUM_HAND_JOINTS, dtype=np.float32)
+        right[HandInputIndex.JOINT_VALID] = np.ones(NUM_HAND_JOINTS, dtype=np.uint8)
+
+        r1 = _run_retargeter(
+            node,
+            {"hand_left": left_absent, "hand_right": right, "transform": xform_id},
+        )
+        assert r1["hand_left"].is_none
+        assert not r1["hand_right"].is_none
+
+        left = _active_left_joint0_1_0_0()
+        r2 = _run_retargeter(
+            node,
+            {"hand_left": left, "hand_right": right, "transform": xform_90},
+        )
+        assert not r2["hand_left"].is_none
+        pos2 = np.from_dlpack(r2["hand_left"][HandInputIndex.JOINT_POSITIONS])
+        npt.assert_array_almost_equal(pos2[0], [0.0, 1.0, 0.0], decimal=5)
+
+        r3 = _run_retargeter(
+            node,
+            {"hand_left": left_absent, "hand_right": right, "transform": xform_id},
+        )
+        assert r3["hand_left"].is_none
+
+        r4 = _run_retargeter(
+            node,
+            {
+                "hand_left": _active_left_joint0_1_0_0(),
+                "hand_right": right,
+                "transform": xform_id,
+            },
+        )
+        pos4 = np.from_dlpack(r4["hand_left"][HandInputIndex.JOINT_POSITIONS])
+        npt.assert_array_almost_equal(pos4[0], [1.0, 0.0, 0.0], decimal=5)

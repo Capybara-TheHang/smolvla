@@ -1,0 +1,21 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Run linters using pre-commit
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  pre-commit:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+    - uses: actions/setup-python@v6
+      with:
+        python-version: "3.12"
+    - uses: pre-commit/action@v3.0.1
+      env:
+        # Skip copyright-year in CI; see https://pre-commit.com/#temporarily-disabling-hooks
+        SKIP: check-copyright-year

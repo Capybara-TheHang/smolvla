@@ -1,0 +1,1106 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Build Ubuntu
+
+on:
+  push:
+    branches: [ main, 'release/*.*.x' ]
+    tags: [ 'v*' ]
+  pull_request:
+
+# For PRs, we want to cancel in-progress runs to save resources.
+# For pushes to main or releases, we want to allow all runs to complete.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build-ubuntu:
+    # Pin to 22.04 so the wheel is built with GCC 11's libstdc++. The resulting wheel
+    # then runs on both Ubuntu 22.04 and 24.04 (24.04's libstdc++ is backward compatible).
+    runs-on: ${{ matrix.arch == 'arm64' && 'ubuntu-22.04-arm' || 'ubuntu-22.04' }}
+
+    strategy:
+      fail-fast: ${{ github.event_name == 'pull_request' }}
+      matrix:
+        build_type: ["Debug", "Release"]
+        python_version: ['3.10', '3.11', '3.12', '3.13']
+        arch: ['x64', 'arm64']
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0 # Full history for accurate git describe
+
+    - name: Install uv
+      uses: ./.github/actions/setup-uv
+
+    - name: Install Apt dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake libx11-dev clang-format-14 ccache libvulkan-dev glslang-tools \
+          libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev libxkbcommon-dev \
+          libwayland-dev wayland-protocols autoconf automake libtool pkg-config libudev-dev
+
+    - name: Install patchelf (Release only)
+      if: ${{ matrix.build_type == 'Release' }}
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y patchelf
+
+    # CUDA toolkit needed at link time for viz_core (device_image
+    # links libcudart). The wheel itself excludes libcuda.so.1 via
+    # auditwheel; runtime CUDA is the consumer's responsibility.
+    # Custom action handles both x86_64 and ARM64 (sbsa) repos.
+    - name: Install CUDA toolkit
+      uses: ./.github/actions/setup-cuda
+
+    - name: Setup CloudXR SDK
+      id: cloudxr-sdk
+      uses: ./.github/actions/setup-cloudxr-sdk
+      with:
+        ngc-api-key: ${{ secrets.NGC_TELEOP_CORE_GITHUB_SERVICE_KEY }}
+
+    # robotic_grounding source bundle for the [grounding] extra (Sharpa retargeter).
+    # Disabled on release branches (and PRs targeting them) to keep release
+    # artifacts free of V2D source: V2D is private/pre-release and shouldn't
+    # ship with anything stamped as a release. Also no-ops on forks that
+    # lack V2D_RETARGETER_TOKEN. In every disabled case the wheel build skips
+    # bundling robotic_grounding/, and Sharpa tests skip via the
+    # _HAS_PINOCCHIO guard. Must run BEFORE `Configure CMake` so the wheel
+    # staging step in src/core/python/CMakeLists.txt picks up
+    # deps/v2d/src/robotic_grounding/.
+    - name: Setup robotic_grounding source bundle
+      id: setup-v2d-src
+      if: ${{ !startsWith(github.ref_name, 'release/') && !startsWith(github.base_ref, 'release/') }}
+      uses: ./.github/actions/setup-v2d-src
+      with:
+        github-token: ${{ secrets.V2D_RETARGETER_TOKEN }}
+
+    # vcpkg - required when BUILD_PLUGIN_OAK_CAMERA=ON for DepthAI v3.x deps
+    - name: Cache vcpkg
+      uses: actions/cache@v4
+      with:
+        path: |
+          ~/vcpkg
+          build/vcpkg_installed
+        key: vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('cmake/DepthAIVcpkgManifest.cmake') }}
+        restore-keys: |
+          vcpkg-${{ runner.os }}-${{ runner.arch }}-
+
+    - name: Setup vcpkg
+      run: |
+        if [ ! -f ~/vcpkg/vcpkg ]; then
+          git clone https://github.com/microsoft/vcpkg ~/vcpkg
+          ~/vcpkg/bootstrap-vcpkg.sh -disableMetrics
+        fi
+        echo "VCPKG_ROOT=$HOME/vcpkg" >> $GITHUB_ENV
+
+    - name: Cache ccache
+      uses: actions/cache@v5
+      with:
+        path: ~/.cache/ccache
+        key: ccache-${{ runner.os }}-${{ runner.arch }}-${{ matrix.build_type }}-py${{ matrix.python_version }}-${{ hashFiles('**/CMakeLists.txt') }}
+        restore-keys: |
+          ccache-${{ runner.os }}-${{ runner.arch }}-${{ matrix.build_type }}-py${{ matrix.python_version }}-
+
+    - name: Verify ccache
+      run: |
+        ccache --version
+        ccache --show-config
+
+    - name: Configure CMake
+      run: |
+        cmake -B build \
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+          -DISAAC_TELEOP_PYTHON_VERSION=${{ matrix.python_version }} \
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+          -DBUILD_PLUGIN_OAK_CAMERA=ON \
+          -DBUILD_VIZ=ON \
+          -DENABLE_CLOUDXR_BUNDLE_CHECK=ON \
+          -DBUNDLE_ROBOTIC_GROUNDING=${{ steps.setup-v2d-src.outputs.bundled || 'false' }} \
+          -DCMAKE_TOOLCHAIN_FILE=${{ env.VCPKG_ROOT }}/scripts/buildsystems/vcpkg.cmake
+
+    - name: Build
+      run: cmake --build build --parallel 4
+
+    - name: ccache stats
+      run: ccache --show-stats
+
+    - name: Run All Tests
+      run: ctest --test-dir build --output-on-failure --parallel
+
+    - name: Package viz test binaries (Release, py3.11 only)
+      # GPU [gpu]-tagged tests run separately on a self-hosted GPU runner
+      # in the test-viz-gpu job. We package the test executables here so
+      # that job can download and run them without rebuilding. Test binaries
+      # don't depend on Python, so we only upload from one matrix entry.
+      if: ${{ matrix.build_type == 'Release' && matrix.python_version == '3.11' }}
+      run: |
+        set -euo pipefail
+        mkdir -p viz-tests-pkg
+        # Glob all viz_*_tests executables (covers viz_core_tests today, and
+        # viz_layers_tests / viz_session_tests / viz_xr_tests as they ship).
+        find build/src/viz -name 'viz_*_tests' -type f -executable \
+          -exec cp -v {} viz-tests-pkg/ \;
+        if ! ls viz-tests-pkg/viz_*_tests >/dev/null 2>&1; then
+          echo "No viz test binaries found under build/src/viz/"
+          exit 1
+        fi
+        tar -cvzf viz-tests.tar.gz -C viz-tests-pkg .
+
+    - name: Upload viz test binaries (Release, py3.11 only)
+      if: ${{ matrix.build_type == 'Release' && matrix.python_version == '3.11' }}
+      uses: actions/upload-artifact@v6
+      with:
+        name: viz-tests-${{ matrix.arch }}
+        path: viz-tests.tar.gz
+        if-no-files-found: error
+        retention-days: 1
+
+    - name: Install (Release only)
+      if: matrix.build_type == 'Release'
+      run: cmake --install build
+
+    - name: Repair wheel tags with auditwheel (Release only)
+      if: matrix.build_type == 'Release'
+      run: |
+        set -euo pipefail
+
+        shopt -s nullglob
+        wheels=(install/wheels/*.whl)
+        if (( ${#wheels[@]} == 0 )); then
+          echo "No wheels found under install/wheels/*.whl"
+          ls -la install/wheels || true
+          exit 1
+        fi
+
+        mkdir -p install/wheels-repaired
+        for wheel in "${wheels[@]}"; do
+          echo "Repairing ${wheel}"
+          # Exclude GPU driver/runtime libs so wheels stay portable across systems without bundling host-specific binaries.
+          uv run --python ${{ matrix.python_version }} --with "auditwheel==6.6.0" \
+            auditwheel repair --exclude libcuda.so.1 --exclude libvulkan.so.1 --wheel-dir install/wheels-repaired "${wheel}"
+        done
+
+        rm -f install/wheels/*.whl
+        mv install/wheels-repaired/*.whl install/wheels/
+        rmdir install/wheels-repaired || true
+
+    - name: Create tarball to preserve permissions
+      if: matrix.build_type == 'Release'
+      run: tar -cvf isaacteleop-install.tar -C install .
+
+    - name: Upload Release artifacts
+      if: matrix.build_type == 'Release'
+      uses: actions/upload-artifact@v6
+      with:
+        name: isaacteleop-install-release-${{ matrix.arch }}-py${{ matrix.python_version }}
+        path: isaacteleop-install.tar
+        retention-days: 1
+    - name: Upload wheel artifacts
+      if: matrix.build_type == 'Release'
+      uses: actions/upload-artifact@v6
+      with:
+        name: isaacteleop-wheels-${{ matrix.arch }}-py${{ matrix.python_version }}
+        path: install/wheels/*.whl
+        if-no-files-found: error
+        retention-days: 1
+
+  test-viz-gpu:
+    # Runs [gpu]-tagged Catch2 tests for the Televiz module on a self-hosted
+    # GPU runner. The build-ubuntu job runs on a GPU-less GitHub-hosted runner
+    # where these tests SKIP cleanly; this job actually exercises the Vulkan
+    # / CUDA paths that build-ubuntu cannot.
+    runs-on: [self-hosted, linux, gpu, "${{ matrix.arch }}"]
+    needs: build-ubuntu
+
+    strategy:
+      fail-fast: ${{ github.event_name == 'pull_request' }}
+      matrix:
+        arch: ['x64', 'arm64']
+
+    steps:
+    - name: Download viz test binaries
+      uses: actions/download-artifact@v7
+      with:
+        name: viz-tests-${{ matrix.arch }}
+
+    - name: Extract test binaries
+      run: |
+        set -euo pipefail
+        mkdir -p viz-tests
+        tar -xzvf viz-tests.tar.gz -C viz-tests
+        chmod +x viz-tests/viz_*_tests
+
+    # No CUDA Toolkit install on the GPU runner — viz_core static-links
+    # libcudart_static, so the binaries only need the NVIDIA driver
+    # (libcuda.so.1) which the runner already has.
+
+    - name: Run viz [gpu] tests
+      run: |
+        set -euo pipefail
+        cd viz-tests
+        # Run [gpu]-tagged tests for every viz_*_tests binary. The build-ubuntu
+        # job already covered [unit] tests on a CPU-only runner; here we focus
+        # on the GPU paths that genuinely need Vulkan/CUDA at runtime.
+        #
+        # --allow-running-no-tests makes "no [gpu] tests in this binary" a
+        # success rather than a Catch2 exit-code-2 failure. Some binaries
+        # (e.g. viz_layers_tests today) only have [unit] tests; that's
+        # expected, not a regression.
+        #
+        # We retry once on failure: the self-hosted GPU runner is shared with
+        # test-cloudxr / test-teleop-ros2, and concurrent Vulkan/CUDA usage
+        # can transiently make vkEnumeratePhysicalDevices return no suitable
+        # devices. A single retry after a short sleep clears these flakes
+        # without masking real regressions (a true bug would fail twice).
+        run_one() {
+          local bin=$1
+          if ./"${bin}" "[gpu]" --reporter compact --allow-running-no-tests; then
+            return 0
+          fi
+          echo "::warning::${bin} [gpu] failed on first attempt; retrying after 5s"
+          sleep 5
+          ./"${bin}" "[gpu]" --reporter compact --allow-running-no-tests
+        }
+        failures=0
+        for test_bin in viz_*_tests; do
+          echo "================================================================"
+          echo "Running ${test_bin} [gpu]"
+          echo "================================================================"
+          if ! run_one "${test_bin}"; then
+            failures=$((failures + 1))
+          fi
+        done
+        if [ "${failures}" -ne 0 ]; then
+          echo "${failures} viz GPU test binary/binaries reported failures"
+          exit 1
+        fi
+
+    # ── viz_python GPU tests ─────────────────────────────────────────
+    # build-ubuntu runs the headless Python tests (import smoke, protocol
+    # dict shape, numpy round-trip). The remaining viz_python suite —
+    # test_offscreen_session.py and the CuPy round-trips in
+    # test_array_interface.py — needs a real Vulkan / CUDA device, so we
+    # exercise it here against the wheel we just built.
+    #
+    # Pinned to one Python version (3.12). The bindings layer is thin;
+    # cross-Python coverage is already provided by the build-ubuntu
+    # matrix (which runs every viz_python test that doesn't need a GPU).
+
+    - name: Checkout source (for pyproject.toml + viz python tests)
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 1
+
+    - name: Install uv
+      uses: ./.github/actions/setup-uv
+
+    - name: Download isaacteleop wheel (py3.12)
+      uses: actions/download-artifact@v7
+      with:
+        name: isaacteleop-wheels-${{ matrix.arch }}-py3.12
+        path: viz-python-wheels
+
+    - name: Run viz_python tests against the GPU
+      run: |
+        set -euo pipefail
+        shopt -s nullglob
+        wheels=(viz-python-wheels/isaacteleop-*.whl)
+        if (( ${#wheels[@]} == 0 )); then
+          echo "No isaacteleop wheel found"
+          ls -la viz-python-wheels || true
+          exit 1
+        fi
+        # Same retry treatment as the C++ [gpu] tests above — the
+        # self-hosted runner is shared with other GPU jobs and Vulkan
+        # device enumeration occasionally returns empty under contention.
+        run_pytest() {
+          uv run --python 3.12 \
+                 --with "${wheels[0]}" \
+                 --with pytest \
+                 --with numpy \
+                 --with cupy-cuda12x \
+                 pytest -v --tb=short src/viz/python_tests/
+        }
+        if ! run_pytest; then
+          echo "::warning::viz_python GPU tests failed on first attempt; retrying after 5s"
+          sleep 5
+          run_pytest
+        fi
+
+  test-viz-sanitizers:
+    # Builds the viz module with AddressSanitizer + UndefinedBehaviorSanitizer
+    # and runs only the [unit]-tagged Catch2 tests on a GPU-less GitHub-hosted
+    # runner. Catches lifetime / leak / UB bugs that pass the regular build
+    # (validate-then-allocate failures, missed deletes, dangling refs).
+    #
+    # [gpu] tests are intentionally NOT run here: ASAN intercepts mmap /
+    # malloc and clashes with the NVIDIA Vulkan driver's own allocators
+    # in ways that produce false positives. The GPU surface is covered
+    # by test-viz-gpu on the self-hosted runner.
+    runs-on: ubuntu-22.04
+    needs: build-ubuntu
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+
+    - name: Install uv
+      uses: ./.github/actions/setup-uv
+
+    - name: Install Apt dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential cmake libx11-dev clang-format-14 ccache libvulkan-dev glslang-tools \
+          libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev libxkbcommon-dev \
+          libwayland-dev wayland-protocols
+
+    - name: Install CUDA toolkit
+      uses: ./.github/actions/setup-cuda
+
+    - name: Cache ccache
+      uses: actions/cache@v5
+      with:
+        path: ~/.cache/ccache
+        key: ccache-${{ runner.os }}-${{ runner.arch }}-sanitizers-${{ hashFiles('**/CMakeLists.txt') }}
+        restore-keys: |
+          ccache-${{ runner.os }}-${{ runner.arch }}-sanitizers-
+
+    - name: Configure CMake (ASAN + UBSAN)
+      run: |
+        cmake -B build-san \
+          -DCMAKE_BUILD_TYPE=Debug \
+          -DBUILD_VIZ=ON \
+          -DBUILD_PLUGINS=OFF \
+          -DBUILD_EXAMPLES=OFF \
+          -DBUILD_PYTHON_BINDINGS=OFF \
+          -DENABLE_CLOUDXR_BUNDLE_CHECK=OFF \
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+          -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+          -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer -g" \
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined" \
+          -DCMAKE_SHARED_LINKER_FLAGS="-fsanitize=address,undefined"
+
+    - name: Build viz tests
+      run: |
+        cmake --build build-san --parallel 4 \
+          --target viz_core_tests viz_layers_tests viz_session_tests
+
+    - name: Run viz [unit] tests under sanitizers
+      env:
+        ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:halt_on_error=1:abort_on_error=1
+        UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+      run: |
+        set -euo pipefail
+        ctest --test-dir build-san -L unit --output-on-failure
+
+  test-cloudxr:
+    runs-on: [self-hosted, linux, gpu, "${{ matrix.arch }}"]
+    needs: build-ubuntu
+
+    strategy:
+      fail-fast: ${{ github.event_name == 'pull_request' }}
+      matrix:
+        python_version: ['3.10', '3.11', '3.12', '3.13']
+        arch: ['x64', 'arm64']
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+      with:
+        submodules: recursive
+
+    - name: Install uv
+      uses: ./.github/actions/setup-uv
+
+    - name: Download install artifacts
+      uses: actions/download-artifact@v7
+      with:
+        name: isaacteleop-install-release-${{ matrix.arch }}-py${{ matrix.python_version }}
+
+    - name: Extract tarball to preserve permissions
+      run: |
+        mkdir -p install
+        tar -xvf isaacteleop-install.tar -C install
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v4
+
+    - name: Run Tests with CloudXR
+      env:
+        CI: true
+        ACCEPT_CLOUDXR_EULA: Y
+      run: |
+        # Create .env file with EULA acceptance
+        echo "ACCEPT_CLOUDXR_EULA=Y" > deps/cloudxr/.env
+
+        # Run tests with CloudXR runtime
+        ./scripts/run_tests_with_cloudxr.sh --python-version ${{ matrix.python_version }}
+
+  test-teleop-ros2:
+    runs-on: [self-hosted, linux, gpu, "${{ matrix.arch }}"]
+    needs: build-ubuntu
+
+    strategy:
+      fail-fast: ${{ github.event_name == 'pull_request' }}
+      matrix:
+        python_version: ['3.10', '3.12']
+        arch: ['x64', 'arm64']
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v6
+      with:
+        submodules: recursive
+
+    - name: Install uv
+      uses: ./.github/actions/setup-uv
+
+    - name: Download install artifacts
+      uses: actions/download-artifact@v7
+      with:
+        name: isaacteleop-install-release-${{ matrix.arch }}-py${{ matrix.python_version }}
+
+    - name: Extract tarball to preserve permissions
+      run: |
+        mkdir -p install
+        tar -xvf isaacteleop-install.tar -C install
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v4
+
+    - name: Setup robotic_grounding source bundle
+      id: setup-v2d-src
+      if: ${{ !startsWith(github.ref_name, 'release/') && !startsWith(github.base_ref, 'release/') }}
+      uses: ./.github/actions/setup-v2d-src
+      with:
+        github-token: ${{ secrets.V2D_RETARGETER_TOKEN }}
+
+    - name: Set ROS Distro
+      id: ros-distro
+      run: |
+        if [ "${{ matrix.python_version }}" = "3.10" ]; then
+          echo "ROS_DISTRO=humble" >> $GITHUB_ENV
+        elif [ "${{ matrix.python_version }}" = "3.12" ]; then
+          echo "ROS_DISTRO=jazzy" >> $GITHUB_ENV
+        fi
+
+    - name: Setup CloudXR SDK
+      uses: ./.github/actions/setup-cloudxr-sdk
+      with:
+        ngc-api-key: ${{ secrets.NGC_TELEOP_CORE_GITHUB_SERVICE_KEY }}
+
+    - name: Build teleop_ros2 image
+      run: |
+        docker build -f examples/teleop_ros2/Dockerfile \
+          --build-arg ROS_DISTRO=${{ env.ROS_DISTRO }} \
+          --build-arg PYTHON_VERSION=${{ matrix.python_version }} \
+          --build-arg BUNDLE_ROBOTIC_GROUNDING=${{ steps.setup-v2d-src.outputs.bundled || 'false' }} \
+          -t teleop_ros2_ref:${{ env.ROS_DISTRO }} .
+
+    # MCAP replay path: feed a recorded fixture through the node
+    # (SessionMode.REPLAY, no CloudXR runtime / GPU) across all teleop modes and
+    # verify the published topics. The cheaper, deterministic check; runs before
+    # the live bring-up below, which reuses the same image and removes it on
+    # teardown.
+    - name: Verify application modes (MCAP replay)
+      run: |
+        set -euo pipefail
+
+        PROJECT_NAME="isaacteleop-test-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.arch }}-${{ env.ROS_DISTRO }}"
+        LOG_FILE_BASE="/tmp/ros2_test_output_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}_${{ matrix.arch }}_${{ env.ROS_DISTRO }}"
+        REPLAY_MCAP="/tmp/teleop_ros2_test_input_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}_${{ matrix.arch }}_${{ env.ROS_DISTRO }}.mcap"
+        STARTUP_MARKER="TeleopSession started successfully"
+        READINESS_TIMEOUT_SEC=30
+        READINESS_POLL_INTERVAL_SEC=1
+
+        # Cleanup
+        trap 'docker ps -aq --filter "name=teleop-ros2-$PROJECT_NAME" | xargs -r docker rm -f >/dev/null 2>&1 || true; rm -f "$REPLAY_MCAP"' EXIT
+
+        docker run --rm \
+          --user "$(id -u):$(id -g)" \
+          -v /tmp:/tmp \
+          --entrypoint bash teleop_ros2_ref:${{ env.ROS_DISTRO }} -c \
+          "source /usr/local/bin/teleop-env-setup && exec /opt/isaacteleop/install/examples/teleop_ros2/cpp/integration_tests/teleop_ros2_mcap_generator '$REPLAY_MCAP'"
+
+        for mode in controller_teleop hand_teleop controller_raw full_body; do
+          echo "Testing mode: $mode"
+          LOG_FILE="${LOG_FILE_BASE}_${mode}.log"
+          RUN_NAME="teleop-ros2-${PROJECT_NAME}-${mode//_/-}"
+          verifier_rc=0
+          docker_rc=0
+          started=false
+
+          rm -f "$LOG_FILE"
+
+          docker run -d \
+            --name "$RUN_NAME" \
+            --network host \
+            -v /tmp:/tmp \
+            -e PYTHONUNBUFFERED=1 \
+            --entrypoint bash teleop_ros2_ref:${{ env.ROS_DISTRO }} -c \
+            "source /usr/local/bin/teleop-env-setup && exec uv run --no-sync teleop_ros2_node.py --ros-args -p mode:=$mode -p mcap_replay_path:=$REPLAY_MCAP" >/dev/null
+
+          deadline=$((SECONDS + READINESS_TIMEOUT_SEC))
+          while [ "$SECONDS" -lt "$deadline" ]; do
+            docker logs "$RUN_NAME" > "$LOG_FILE" 2>&1 || true
+
+            if [ -f "$LOG_FILE" ] && grep -q "$STARTUP_MARKER" "$LOG_FILE"; then
+              started=true
+              break
+            fi
+
+            running=$(docker inspect -f '{{.State.Running}}' "$RUN_NAME" 2>/dev/null || echo false)
+            if [ "$running" != "true" ]; then
+              docker_rc=$(docker inspect -f '{{.State.ExitCode}}' "$RUN_NAME" 2>/dev/null || echo 1)
+              break
+            fi
+
+            sleep "$READINESS_POLL_INTERVAL_SEC"
+          done
+
+          docker logs "$RUN_NAME" > "$LOG_FILE" 2>&1 || true
+
+          if [ "$started" = true ]; then
+            if docker exec \
+              -e PYTHONUNBUFFERED=1 \
+              "$RUN_NAME" bash -c \
+              "source /usr/local/bin/teleop-env-setup && exec uv run --no-sync integration_tests/teleop_ros2_topic_verifier.py --mode $mode"; then
+              verifier_rc=0
+            else
+              verifier_rc=$?
+            fi
+            docker logs "$RUN_NAME" > "$LOG_FILE" 2>&1 || true
+            docker stop --time 5 "$RUN_NAME" >/dev/null || true
+            docker wait "$RUN_NAME" >/dev/null || true
+          else
+            running=$(docker inspect -f '{{.State.Running}}' "$RUN_NAME" 2>/dev/null || echo false)
+            if [ "$running" = "true" ]; then
+              echo "Error: TeleopSession did not report readiness within ${READINESS_TIMEOUT_SEC}s in mode $mode"
+              docker stop --time 5 "$RUN_NAME" >/dev/null || true
+              docker wait "$RUN_NAME" >/dev/null || true
+            else
+              echo "Error: teleop_ros2_node exited before readiness in mode $mode (exit code $docker_rc)"
+            fi
+          fi
+
+          docker rm -f "$RUN_NAME" >/dev/null 2>&1 || true
+
+          if [ -f "$LOG_FILE" ]; then
+            cat "$LOG_FILE"
+          else
+            echo "No test log captured at $LOG_FILE"
+          fi
+
+          if [ "$started" != true ]; then
+            exit 1
+          fi
+          if [ "$verifier_rc" -ne 0 ]; then
+            echo "Error: topic verifier failed in mode $mode (exit code $verifier_rc)"
+            exit "$verifier_rc"
+          fi
+        done
+
+    # Live CloudXR bring-up on the same GPU runner, reusing the teleop_ros2_ref
+    # image built above. Runs the teleop_ros2 node against a real in-process
+    # CloudXR runtime (CloudXRLauncher launches the runtime + WSS proxy) and
+    # asserts clean bring-up. No XR client connects, so the session never starts
+    # and topics are not verified here; this exercises the CloudXR launch path
+    # the replay phase above cannot.
+    - name: Verify live CloudXR bring-up
+      run: |
+        set -euo pipefail
+
+        IMAGE="teleop_ros2_ref:${{ env.ROS_DISTRO }}"
+        RUN_NAME="teleop-ros2-cloudxr-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${{ matrix.arch }}-${{ env.ROS_DISTRO }}"
+        LOG_FILE="/tmp/ros2_cloudxr_output_${GITHUB_RUN_ID}_${GITHUB_RUN_ATTEMPT}_${{ matrix.arch }}_${{ env.ROS_DISTRO }}.log"
+        MODE="controller_teleop"
+
+        # The node logs this after CloudXRLauncher returns: runtime ready + WSS
+        # proxy up. This is the primary bring-up marker.
+        BRINGUP_MARKER="CloudXR runtime and WSS proxy started"
+        # After bring-up the node enters the live session loop. With no XR client
+        # connected it logs the retry warning; if a device/system is present it
+        # logs session start. Either proves the loop is live.
+        LOOP_MARKER_A="TeleopSession started successfully"
+        LOOP_MARKER_B="No XR client connected"
+        # Hard failures from the launcher/runtime.
+        FAIL_RE="CloudXR runtime failed to start|SDK missing libcloudxr.so|CloudXR EULA was not accepted|CloudXR launcher is not running|runtime process exited unexpectedly|WSS proxy thread stopped unexpectedly"
+
+        BRINGUP_TIMEOUT_SEC=180
+        LOOP_TIMEOUT_SEC=30
+        SOAK_SEC=15
+        POLL_INTERVAL_SEC=2
+
+        rm -f "$LOG_FILE"
+
+        cleanup() {
+          docker logs "$RUN_NAME" > "$LOG_FILE" 2>&1 || true
+          docker rm -f "$RUN_NAME" >/dev/null 2>&1 || true
+          docker image rm -f "$IMAGE" >/dev/null 2>&1 || true
+        }
+        trap cleanup EXIT
+
+        # Live session: no mcap_replay_path => SessionMode.LIVE; accept the EULA
+        # non-interactively. --gpus all gives the in-process runtime a GPU.
+        docker run -d \
+          --name "$RUN_NAME" \
+          --gpus all \
+          -e PYTHONUNBUFFERED=1 \
+          -e ACCEPT_CLOUDXR_EULA=Y \
+          --entrypoint bash "$IMAGE" -c \
+          "source /usr/local/bin/teleop-env-setup && exec uv run --no-sync teleop_ros2_node.py --ros-args -p mode:=$MODE -p cloudxr_accept_eula:=true" >/dev/null
+
+        fail() {
+          echo "Error: $1"
+          docker logs "$RUN_NAME" > "$LOG_FILE" 2>&1 || true
+          echo "===== teleop_ros2 (live) container log ====="
+          cat "$LOG_FILE" 2>/dev/null || echo "No log captured"
+          exit 1
+        }
+
+        # Phase 1: wait for CloudXR runtime + WSS proxy bring-up.
+        bringup=false
+        deadline=$((SECONDS + BRINGUP_TIMEOUT_SEC))
+        while [ "$SECONDS" -lt "$deadline" ]; do
+          docker logs "$RUN_NAME" > "$LOG_FILE" 2>&1 || true
+
+          if grep -Eq "$FAIL_RE" "$LOG_FILE"; then
+            fail "CloudXR runtime/launcher reported a fatal error during bring-up"
+          fi
+          if grep -qF "$BRINGUP_MARKER" "$LOG_FILE"; then
+            bringup=true
+            break
+          fi
+
+          running=$(docker inspect -f '{{.State.Running}}' "$RUN_NAME" 2>/dev/null || echo false)
+          if [ "$running" != "true" ]; then
+            rc=$(docker inspect -f '{{.State.ExitCode}}' "$RUN_NAME" 2>/dev/null || echo 1)
+            fail "node exited before CloudXR bring-up (exit code $rc)"
+          fi
+
+          sleep "$POLL_INTERVAL_SEC"
+        done
+
+        if [ "$bringup" != true ]; then
+          fail "CloudXR runtime + WSS proxy did not come up within ${BRINGUP_TIMEOUT_SEC}s"
+        fi
+        echo "CloudXR runtime + WSS proxy came up."
+
+        # Phase 2: confirm the node entered the live session loop.
+        loop=false
+        deadline=$((SECONDS + LOOP_TIMEOUT_SEC))
+        while [ "$SECONDS" -lt "$deadline" ]; do
+          docker logs "$RUN_NAME" > "$LOG_FILE" 2>&1 || true
+          if grep -Eq "$FAIL_RE" "$LOG_FILE"; then
+            fail "CloudXR runtime/launcher reported a fatal error after bring-up"
+          fi
+          if grep -qF "$LOOP_MARKER_A" "$LOG_FILE" || grep -qF "$LOOP_MARKER_B" "$LOG_FILE"; then
+            loop=true
+            break
+          fi
+          running=$(docker inspect -f '{{.State.Running}}' "$RUN_NAME" 2>/dev/null || echo false)
+          if [ "$running" != "true" ]; then
+            rc=$(docker inspect -f '{{.State.ExitCode}}' "$RUN_NAME" 2>/dev/null || echo 1)
+            fail "node exited before entering the live session loop (exit code $rc)"
+          fi
+          sleep "$POLL_INTERVAL_SEC"
+        done
+
+        if [ "$loop" != true ]; then
+          fail "node did not enter the live session loop within ${LOOP_TIMEOUT_SEC}s"
+        fi
+        echo "Node entered the live session loop."
+
+        # Phase 3: soak. The node calls launcher.health_check() every loop, so a
+        # dead runtime/WSS proxy would crash it. Surviving the soak with no fatal
+        # log means the live CloudXR stack stayed healthy.
+        sleep "$SOAK_SEC"
+        docker logs "$RUN_NAME" > "$LOG_FILE" 2>&1 || true
+        if grep -Eq "$FAIL_RE" "$LOG_FILE"; then
+          fail "CloudXR runtime/launcher reported a fatal error during soak"
+        fi
+        running=$(docker inspect -f '{{.State.Running}}' "$RUN_NAME" 2>/dev/null || echo false)
+        if [ "$running" != "true" ]; then
+          rc=$(docker inspect -f '{{.State.ExitCode}}' "$RUN_NAME" 2>/dev/null || echo 1)
+          fail "node exited during the ${SOAK_SEC}s soak (exit code $rc)"
+        fi
+
+        docker stop --time 5 "$RUN_NAME" >/dev/null || true
+        echo "===== teleop_ros2 (live) container log ====="
+        cat "$LOG_FILE" 2>/dev/null || echo "No log captured"
+        echo "Live CloudXR bring-up verified for mode $MODE (${{ env.ROS_DISTRO }}, ${{ matrix.arch }})."
+
+  # These are the actual dependency jobs for publish-wheel. publish-wheel
+  # depends only on wheel-gate so the dependency list lives in one place, while
+  # this gate still runs for fork PRs where publish-wheel is intentionally skipped.
+  wheel-gate:
+    runs-on: ubuntu-22.04
+    permissions: {}
+    needs:
+      - build-ubuntu
+      - test-viz-gpu
+      - test-viz-sanitizers
+      - test-cloudxr
+      - test-teleop-ros2
+    if: ${{ always() }}
+
+    steps:
+    - name: Require wheel dependencies success
+      env:
+        NEEDS_JSON: ${{ toJson(needs) }}
+      run: |
+        set -euo pipefail
+
+        failed_jobs="$(
+          jq -r '
+            to_entries[]
+            | select(.value.result != "success")
+            | "\(.key) completed with result: \(.value.result)"
+          ' <<< "${NEEDS_JSON}"
+        )"
+
+        if [[ -n "${failed_jobs}" ]]; then
+          echo "${failed_jobs}"
+          exit 1
+        fi
+
+        echo "All wheel dependency jobs completed successfully"
+
+  publish-wheel:  # to internal Artifactory
+    runs-on: [self-hosted, linux]
+    permissions: {}
+    needs:
+      - wheel-gate
+    outputs:
+      wheel_paths: ${{ steps.upload-artifactory.outputs.wheel_paths }}
+    environment: dev
+    timeout-minutes: 10
+
+    # Publish only for same-repo runs (pushes or non-fork PRs). github.repository
+    # is the base repo even for fork PRs, so compare the PR head repo instead.
+    if: >-
+      needs.wheel-gate.result == 'success'
+      && (github.event_name != 'pull_request'
+        || github.event.pull_request.head.repo.full_name == github.repository)
+
+    steps:
+    - name: Set up Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.11'
+
+    - name: Ensure clean wheels directory
+      run: |
+        rm -rf wheels
+
+    - name: Download wheel artifacts
+      uses: actions/download-artifact@v7
+      with:
+        pattern: isaacteleop-wheels-*
+        merge-multiple: true
+        path: wheels
+
+    - name: Upload wheel(s) to Artifactory
+      id: upload-artifactory
+      env:
+        ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+        ARTIFACTORY_REPO: ${{ secrets.ARTIFACTORY_REPO }}
+        ARTIFACTORY_USERNAME: ${{ secrets.ARTIFACTORY_USERNAME }}
+        ARTIFACTORY_API_KEY: ${{ secrets.ARTIFACTORY_API_KEY }}
+      run: |
+        set -euo pipefail
+
+        if [[ -z "${ARTIFACTORY_URL}" || -z "${ARTIFACTORY_REPO}" || -z "${ARTIFACTORY_USERNAME}" || -z "${ARTIFACTORY_API_KEY}" ]]; then
+          echo "Missing one or more required secrets: ARTIFACTORY_URL, ARTIFACTORY_REPO, ARTIFACTORY_USERNAME, ARTIFACTORY_API_KEY"
+          exit 1
+        fi
+
+        if [[ "${ARTIFACTORY_URL}" != https://* ]]; then
+          echo "ARTIFACTORY_URL must use https://"
+          exit 1
+        fi
+
+        shopt -s nullglob
+        wheels=(wheels/*.whl)
+        if (( ${#wheels[@]} == 0 )); then
+          echo "No wheels found under wheels/*.whl"
+          ls -la wheels || true
+          exit 1
+        fi
+
+        python -m pip install --upgrade pip twine
+
+        # Artifactory PyPI repositories use the PyPI API endpoint.
+        repository_url="${ARTIFACTORY_URL%/}/api/pypi/${ARTIFACTORY_REPO}"
+        echo "Publishing ${#wheels[@]} wheel(s)"
+
+        python -m twine upload \
+          --non-interactive \
+          --repository-url "${repository_url}" \
+          -u "${ARTIFACTORY_USERNAME}" \
+          -p "${ARTIFACTORY_API_KEY}" \
+          "${wheels[@]}"
+
+        wheel_base="${ARTIFACTORY_URL%/}/${ARTIFACTORY_REPO}"
+        wheel_prefix="${wheel_base}/"
+
+        wheel_paths=()
+        for wheel in "${wheels[@]}"; do
+          wheel_name="$(basename "${wheel}")"
+          echo "Resolving Artifactory URL for ${wheel_name}"
+
+          search_json="$(curl --fail-with-body --show-error --silent --location --get --connect-timeout 10 --max-time 60 \
+            -u "${ARTIFACTORY_USERNAME}:${ARTIFACTORY_API_KEY}" \
+            --data-urlencode "name=${wheel_name}" \
+            --data-urlencode "repos=${ARTIFACTORY_REPO}" \
+            "${ARTIFACTORY_URL%/}/api/search/artifact")"
+
+          result_count="$(jq '.results | length' <<< "${search_json}")"
+          if [[ "${result_count}" -ne 1 ]]; then
+            echo "Expected exactly 1 Artifactory search result for ${wheel_name}, but got ${result_count}"
+            echo "${search_json}"
+            exit 1
+          fi
+
+          storage_uri="$(jq -r '.results[0].uri // empty' <<< "${search_json}")"
+          if [[ -z "${storage_uri}" ]]; then
+            echo "Unable to resolve storage URI for ${wheel_name}"
+            echo "${search_json}"
+            exit 1
+          fi
+
+          metadata_json="$(curl --fail-with-body --show-error --silent --location --connect-timeout 10 --max-time 60 \
+            -u "${ARTIFACTORY_USERNAME}:${ARTIFACTORY_API_KEY}" \
+            "${storage_uri}")"
+
+          download_uri="$(jq -r '.downloadUri // empty' <<< "${metadata_json}")"
+          if [[ -z "${download_uri}" ]]; then
+            echo "Unable to resolve downloadUri for ${wheel_name}"
+            echo "${metadata_json}"
+            exit 1
+          fi
+
+          wheel_path="${download_uri#${wheel_prefix}}"
+          if [[ "${wheel_path}" == "${download_uri}" || -z "${wheel_path}" ]]; then
+            echo "Unable to clip Artifactory prefix from downloadUri for ${wheel_name}"
+            echo "Expected prefix: ${wheel_prefix}"
+            echo "${metadata_json}"
+            exit 1
+          fi
+
+          wheel_paths+=("${wheel_path}")
+        done
+
+        {
+          echo "wheel_paths<<EOF"
+          printf '%s\n' "${wheel_paths[@]}"
+          echo "EOF"
+        } >> "$GITHUB_OUTPUT"
+
+  kitmaker:
+    runs-on: [self-hosted, linux]
+    needs:
+      - publish-wheel
+    outputs:
+      release_uuid: ${{ steps.submit-kitmaker.outputs.release_uuid }}
+    environment: release
+    permissions:
+      contents: read
+    if: ${{ github.event_name != 'pull_request' && needs.publish-wheel.result == 'success' }}
+
+    steps:
+    - name: Submit wheel release to Kitmaker
+      id: submit-kitmaker
+      env:
+        KITMAKER_API_ENDPOINT: ${{ secrets.KITMAKER_API_ENDPOINT }}
+        KITMAKER_PROJECT_ID: ${{ secrets.KITMAKER_PROJECT_ID }}
+        KITMAKER_TOKEN: ${{ secrets.KITMAKER_TOKEN }}
+        KITMAKER_PIC_EMAIL: ${{ secrets.KITMAKER_PIC_EMAIL }}
+        ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+        ARTIFACTORY_REPO: ${{ secrets.ARTIFACTORY_REPO }}
+        WHEEL_PATHS: ${{ needs.publish-wheel.outputs.wheel_paths }}
+        KITMAKER_UPLOAD: ${{ startsWith(github.ref, 'refs/heads/release/') || startsWith(github.ref, 'refs/tags/v') }}
+      run: |
+        set -euo pipefail
+
+        if [[ -z "${KITMAKER_API_ENDPOINT}" || -z "${KITMAKER_PROJECT_ID}" || -z "${KITMAKER_TOKEN}" || -z "${KITMAKER_PIC_EMAIL}" || -z "${ARTIFACTORY_URL}" || -z "${ARTIFACTORY_REPO}" ]]; then
+          echo "Missing one or more required secrets: KITMAKER_API_ENDPOINT, KITMAKER_PROJECT_ID, KITMAKER_TOKEN, KITMAKER_PIC_EMAIL, ARTIFACTORY_URL, ARTIFACTORY_REPO"
+          exit 1
+        fi
+
+        if [[ "${KITMAKER_API_ENDPOINT}" != https://* ]]; then
+          echo "KITMAKER_API_ENDPOINT must use https://"
+          exit 1
+        fi
+
+        if [[ "${ARTIFACTORY_URL}" != https://* ]]; then
+          echo "ARTIFACTORY_URL must use https://"
+          exit 1
+        fi
+
+        if [[ -z "${WHEEL_PATHS}" ]]; then
+          echo "No wheel paths were produced by publish-wheel job"
+          exit 1
+        fi
+
+        wheel_base="${ARTIFACTORY_URL%/}/${ARTIFACTORY_REPO}"
+
+        api_url="${KITMAKER_API_ENDPOINT%/}/v0/projects/${KITMAKER_PROJECT_ID}/releases"
+        payload_items=()
+        while IFS= read -r wheel_path; do
+          [[ -z "${wheel_path}" ]] && continue
+          wheel_url="${wheel_base}/${wheel_path}"
+          wheel_name="$(basename "${wheel_path}")"
+          echo "Queueing wheel for Kitmaker payload: ${wheel_name}"
+
+          payload_items+=("$(jq -cn \
+            --arg pic "${KITMAKER_PIC_EMAIL}" \
+            --arg url "${wheel_url}" \
+            --argjson upload "${KITMAKER_UPLOAD}" \
+            '{pic: $pic, job_type: "wheel-release-job", publish_to: "both_devzone_pypi", url: $url, size: "small", upload: $upload}')")
+          done <<< "${WHEEL_PATHS}"
+
+        if (( ${#payload_items[@]} == 0 )); then
+          echo "No valid wheel URLs found to submit to Kitmaker"
+          exit 1
+        fi
+
+        payload_array="$(printf '%s\n' "${payload_items[@]}" | jq -s '.')"
+        payload="$(jq -cn --arg project_name "isaacteleop" --argjson payload "${payload_array}" '{project_name: $project_name, payload: $payload}')"
+
+        echo "Posting ${#payload_items[@]} wheel(s) to Kitmaker in a single request"
+        response_json="$(curl --fail-with-body --show-error --silent --location --connect-timeout 10 --max-time 120 \
+          -X POST "${api_url}" \
+          -H "Authorization: Bearer ${KITMAKER_TOKEN}" \
+          -H "Content-Type: application/json" \
+          -d "${payload}")"
+        echo "${response_json}"
+
+        release_uuid="$(jq -r '.release_uuid // empty' <<< "${response_json}")"
+        if [[ -z "${release_uuid}" ]]; then
+          echo "Kitmaker response missing release_uuid"
+          exit 1
+        fi
+
+        echo "release_uuid=${release_uuid}" >> "$GITHUB_OUTPUT"
+
+  kitmaker-status:
+    runs-on: [self-hosted, linux]
+    needs:
+      - kitmaker
+    environment: release
+    permissions:
+      contents: read
+    if: ${{ github.event_name != 'pull_request' && needs.kitmaker.result == 'success' }}
+
+    steps:
+    - name: Monitor Kitmaker release status
+      env:
+        KITMAKER_API_ENDPOINT: ${{ secrets.KITMAKER_API_ENDPOINT }}
+        KITMAKER_PROJECT_ID: ${{ secrets.KITMAKER_PROJECT_ID }}
+        KITMAKER_TOKEN: ${{ secrets.KITMAKER_TOKEN }}
+        KITMAKER_RELEASE_UUID: ${{ needs.kitmaker.outputs.release_uuid }}
+        ARTIFACTORY_URL: ${{ secrets.ARTIFACTORY_URL }}
+        ARTIFACTORY_REPO: ${{ secrets.ARTIFACTORY_REPO }}
+      run: |
+        set -euo pipefail
+
+        # Redact sensitive values that may appear in API responses.
+        echo "::add-mask::${KITMAKER_API_ENDPOINT}"
+        echo "::add-mask::${KITMAKER_API_ENDPOINT%/}"
+        echo "::add-mask::${KITMAKER_RELEASE_UUID}"
+        echo "::add-mask::${KITMAKER_PROJECT_ID}"
+        echo "::add-mask::${ARTIFACTORY_URL}"
+        echo "::add-mask::${ARTIFACTORY_URL%/}"
+        echo "::add-mask::${ARTIFACTORY_REPO}"
+
+        if [[ -z "${KITMAKER_API_ENDPOINT}" || -z "${KITMAKER_TOKEN}" ]]; then
+          echo "Missing required secrets: KITMAKER_API_ENDPOINT, KITMAKER_TOKEN"
+          exit 1
+        fi
+
+        if [[ "${KITMAKER_API_ENDPOINT}" != https://* ]]; then
+          echo "KITMAKER_API_ENDPOINT must use https://"
+          exit 1
+        fi
+
+        if [[ -z "${KITMAKER_RELEASE_UUID}" ]]; then
+          echo "No release_uuid was produced by the kitmaker job"
+          exit 1
+        fi
+
+        status_url="${KITMAKER_API_ENDPOINT%/}/v0/status/${KITMAKER_RELEASE_UUID}"
+        # Limit total polling time to under an hour with exponential backoff starting at 30s
+        max_attempts=15
+        sleep_seconds=30
+        # Reason reported if every attempt is exhausted; refined as we poll so
+        # the final message reflects the last condition seen (e.g. repeated
+        # 5xx or network errors) instead of always claiming a plain timeout.
+        last_reason="release status never reached a terminal state"
+
+        for ((attempt=1; attempt<=max_attempts; attempt++)); do
+          echo "Polling Kitmaker status (attempt ${attempt}/${max_attempts})"
+
+          # Capture the body and HTTP status separately (instead of relying on
+          # --fail-with-body) so we can tell a transient failure worth retrying
+          # — a network error or a 5xx — apart from a permanent one (a 4xx such
+          # as auth/not-found) that will never succeed and should fail fast.
+          # Don't let a network failure abort the step under `set -e`.
+          curl_status=0
+          curl_output="$(curl --show-error --silent --location --connect-timeout 10 --max-time 60 \
+            --write-out '\n%{http_code}' \
+            -H "Authorization: Bearer ${KITMAKER_TOKEN}" \
+            "${status_url}")" || curl_status=$?
+          http_code="${curl_output##*$'\n'}"
+          response_json="${curl_output%$'\n'*}"
+
+          if (( curl_status != 0 )); then
+            # Network-level failure (timeout, connection reset, DNS): transient.
+            last_reason="curl request kept failing (last exit ${curl_status})"
+            echo "curl request failed (exit ${curl_status}); will retry on the next attempt"
+          else
+            echo "${response_json}"
+
+            if (( http_code >= 500 )); then
+              last_reason="Kitmaker status endpoint kept returning HTTP ${http_code}"
+              echo "Kitmaker status request returned HTTP ${http_code}; will retry on the next attempt"
+            elif (( http_code >= 400 )); then
+              echo "Kitmaker status request returned HTTP ${http_code}"
+              exit 1
+            else
+              # A non-JSON body (e.g. a proxy/gateway error page served with a
+              # 2xx) is itself transient: leave status empty and keep polling
+              # rather than letting jq's parse error abort the step under set -e.
+              status="$(jq -r '.status // empty' <<< "${response_json}" 2>/dev/null || true)"
+
+              if [[ "${status}" == "completed" ]]; then
+                echo "Kitmaker release ${KITMAKER_RELEASE_UUID} completed"
+                exit 0
+              fi
+
+              if [[ "${status}" == "failed" ]]; then
+                echo "Kitmaker release ${KITMAKER_RELEASE_UUID} failed"
+                exit 1
+              fi
+            fi
+          fi
+
+          if (( attempt == max_attempts )); then
+            break
+          fi
+
+          sleep "${sleep_seconds}"
+          sleep_seconds=$(( sleep_seconds * 125 / 100 ))
+        done
+
+        echo "Timed out after ${max_attempts} attempts waiting for Kitmaker release ${KITMAKER_RELEASE_UUID}: ${last_reason}"
+        exit 1

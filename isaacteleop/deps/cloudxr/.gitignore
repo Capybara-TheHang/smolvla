@@ -1,0 +1,11 @@
+# CloudXR runtime and SDK tarballs
+*.tar.gz
+*.tgz
+
+# CloudXR environment files
+.env
+.env.test
+
+# CloudXR Web SDK (downloaded by scripts/download_cloudxr_sdk.sh)
+.sdk-download/
+cloudxr-web-sdk-*/

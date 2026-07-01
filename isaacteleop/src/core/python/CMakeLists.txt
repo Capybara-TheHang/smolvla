@@ -1,0 +1,177 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Python wheel packaging (combines OXR, DEVICEIO, MCAP, PluginManager, and Schema modules).
+
+
+# Opt-in: bundle deps/v2d/src/robotic_grounding/ into the wheel so
+# `pip install isaacteleop[grounding]` resolves the Sharpa retargeter.
+# Populate the source via scripts/setup_v2d_src.sh first; then configure
+# with -DBUNDLE_ROBOTIC_GROUNDING=TRUE. Default OFF -- forks / OSS builds
+# produce a wheel without robotic_grounding, and Sharpa imports skip.
+option(BUNDLE_ROBOTIC_GROUNDING "Bundle V2D's robotic_grounding into the wheel" OFF)
+
+# Entries injected into pyproject.toml.in's packages + package-data
+# for the viz module. Only present when BUILD_VIZ=ON so a -DBUILD_VIZ=OFF
+# wheel build doesn't reference a missing directory.
+if(BUILD_VIZ)
+    set(VIZ_PACKAGES_BLOCK
+        "    \"isaacteleop.viz\",\n")
+    set(VIZ_PACKAGE_DATA_BLOCK
+        "\"isaacteleop.viz\" = [\"*.so\", \"*.pyd\", \"*.pyi\"]\n")
+else()
+    set(VIZ_PACKAGES_BLOCK "")
+    set(VIZ_PACKAGE_DATA_BLOCK "")
+endif()
+
+set(ROBOTIC_GROUNDING_SRC "${CMAKE_SOURCE_DIR}/deps/v2d/src/robotic_grounding")
+if(BUNDLE_ROBOTIC_GROUNDING)
+    if(NOT EXISTS "${ROBOTIC_GROUNDING_SRC}/__init__.py")
+        message(FATAL_ERROR
+            "BUNDLE_ROBOTIC_GROUNDING=TRUE but ${ROBOTIC_GROUNDING_SRC}/ "
+            "is missing. Run scripts/setup_v2d_src.sh first.")
+    endif()
+    # Entries injected into pyproject.toml.in's `packages = [...]`.
+    set(ROBOTIC_GROUNDING_PACKAGES_BLOCK
+        "    \"robotic_grounding\",\n    \"robotic_grounding.retarget\",\n")
+    set(ROBOTIC_GROUNDING_PACKAGE_DATA_BLOCK
+        "robotic_grounding = [\"assets/xmls/sharpawave/*.xml\"]")
+    message(STATUS "[grounding] bundling robotic_grounding/ from ${ROBOTIC_GROUNDING_SRC}")
+else()
+    set(ROBOTIC_GROUNDING_PACKAGES_BLOCK "")
+    set(ROBOTIC_GROUNDING_PACKAGE_DATA_BLOCK "")
+endif()
+
+# Generate pyproject.toml from template with ISAAC_TELEOP_PYPROJECT_VERSION
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/pyproject.toml.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/pyproject.toml"
+    @ONLY
+)
+
+# After building modules, create the Python package structure.
+add_custom_target(python_package ALL
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/isaacteleop"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/isaacteleop/deviceio"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/isaacteleop/mcap"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/isaacteleop/oxr"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/isaacteleop/plugin_manager"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/isaacteleop/schema"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/isaacteleop/teleop_session_manager"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/isaacteleop/cloudxr"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/isaacteleop/deviceio_trackers"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/isaacteleop/deviceio_session"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/isaacteleop/viz"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/deviceio_init.py" "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/isaacteleop/deviceio/__init__.py"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/../deviceio_trackers/python/deviceio_trackers_init.py" "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/isaacteleop/deviceio_trackers/__init__.py"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/../deviceio_session/python/deviceio_session_init.py" "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/isaacteleop/deviceio_session/__init__.py"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/../mcap/python/mcap_init.py" "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/isaacteleop/mcap/__init__.py"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/../oxr/python/oxr_init.py" "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/isaacteleop/oxr/__init__.py"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/../plugin_manager/python/plugin_manager_init.py" "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/isaacteleop/plugin_manager/__init__.py"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/../schema/python/schema_init.py" "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/isaacteleop/schema/__init__.py"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/../../viz/python/viz_init.py" "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/isaacteleop/viz/__init__.py"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/isaacteleop_init.py" "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/isaacteleop/__init__.py"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/pyproject.toml" "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/MANIFEST.in" "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/setup.py" "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_SOURCE_DIR}/README.md" "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/README.md"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/requirements.txt" "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/requirements-dev.txt" "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/requirements-ui.txt" "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/requirements-cloudxr.txt" "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/requirements-retargeters.txt" "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/requirements-retargeters-lite.txt" "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/requirements-grounding.txt" "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/"
+    DEPENDS deviceio_trackers_py deviceio_session_py oxr_py plugin_manager_py schema_py retargeting_engine_python retargeters_python haptic_devices_python retargeting_engine_ui_python teleop_session_manager_python cloudxr_python
+    COMMENT "Preparing Python package structure"
+)
+
+# viz_py only exists when BUILD_VIZ=ON. Use add_dependencies (not a
+# DEPENDS genex) so the build-order constraint is unconditional under
+# all generators — Windows ninja runs the wheel build in parallel
+# with viz_py's link otherwise and trips a "Permission denied" race
+# on the .pyd file.
+if(BUILD_VIZ)
+    add_dependencies(python_package viz_py)
+endif()
+
+# When deps/v2d/src/robotic_grounding/ is populated (script or CI action),
+# stage it into the wheel staging dir so the resulting Teleop wheel ships
+# robotic_grounding alongside isaacteleop.
+if(BUNDLE_ROBOTIC_GROUNDING)
+    add_custom_command(TARGET python_package POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E rm -rf
+            "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/robotic_grounding"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            "${ROBOTIC_GROUNDING_SRC}"
+            "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>/robotic_grounding"
+        COMMENT "Bundling robotic_grounding/ into wheel staging dir for [grounding] extra"
+    )
+endif()
+
+# Generate Python type stubs (.pyi) for IDE intellisense
+# Uses the same Python version that built the .so files (via uv --python)
+# Each module is processed separately to avoid import chain issues
+set(STUBGEN_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/generate_stubs.py")
+set(STUBGEN_PYPROJECT "${CMAKE_CURRENT_SOURCE_DIR}/stubgen_pyproject.toml")
+set(STUBGEN_PACKAGE_DIR "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>")
+set(PY_TYPED_MARKER "${STUBGEN_PACKAGE_DIR}/isaacteleop/py.typed")
+
+add_custom_command(
+    OUTPUT "${PY_TYPED_MARKER}"
+    COMMAND ${CMAKE_COMMAND} -E echo "Generating Python type stubs..."
+
+    # Copy stubgen pyproject.toml to build directory for uv to use
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/stubgen"
+    COMMAND ${CMAKE_COMMAND} -E copy "${STUBGEN_PYPROJECT}" "${CMAKE_BINARY_DIR}/stubgen/pyproject.toml"
+
+    # Generate stubs for each pybind11 module using the stubgen pyproject.toml
+    COMMAND uv run --project "${CMAKE_BINARY_DIR}/stubgen" --python ${ISAAC_TELEOP_PYTHON_VERSION}
+        python "${STUBGEN_SCRIPT}" isaacteleop.deviceio_trackers._deviceio_trackers "${STUBGEN_PACKAGE_DIR}"
+    COMMAND uv run --project "${CMAKE_BINARY_DIR}/stubgen" --python ${ISAAC_TELEOP_PYTHON_VERSION}
+        python "${STUBGEN_SCRIPT}" isaacteleop.deviceio_session._deviceio_session "${STUBGEN_PACKAGE_DIR}"
+    COMMAND uv run --project "${CMAKE_BINARY_DIR}/stubgen" --python ${ISAAC_TELEOP_PYTHON_VERSION}
+        python "${STUBGEN_SCRIPT}" isaacteleop.oxr._oxr "${STUBGEN_PACKAGE_DIR}"
+    COMMAND uv run --project "${CMAKE_BINARY_DIR}/stubgen" --python ${ISAAC_TELEOP_PYTHON_VERSION}
+        python "${STUBGEN_SCRIPT}" isaacteleop.plugin_manager._plugin_manager "${STUBGEN_PACKAGE_DIR}"
+    COMMAND uv run --project "${CMAKE_BINARY_DIR}/stubgen" --python ${ISAAC_TELEOP_PYTHON_VERSION}
+        python "${STUBGEN_SCRIPT}" isaacteleop.schema._schema "${STUBGEN_PACKAGE_DIR}"
+
+    # Create py.typed marker file (PEP 561) - also serves as build stamp
+    COMMAND ${CMAKE_COMMAND} -E touch "${PY_TYPED_MARKER}"
+    DEPENDS python_package "${STUBGEN_SCRIPT}" "${STUBGEN_PYPROJECT}"
+            $<TARGET_FILE:deviceio_trackers_py>
+            $<TARGET_FILE:deviceio_session_py>
+            $<TARGET_FILE:oxr_py>
+            $<TARGET_FILE:plugin_manager_py>
+            $<TARGET_FILE:schema_py>
+            # viz_py's .pyd file as a file-level dependency when BUILD_VIZ=ON
+            # — keeps the wheel build from racing the link. Empty otherwise.
+            $<$<BOOL:${BUILD_VIZ}>:$<TARGET_FILE:viz_py>>
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+    COMMENT "Generating .pyi stub files for isaacteleop modules"
+)
+
+add_custom_target(python_stubs
+    DEPENDS "${PY_TYPED_MARKER}"
+    SOURCES "${STUBGEN_SCRIPT}" "${STUBGEN_PYPROJECT}"
+)
+
+# Custom target to build the wheel using uv
+# Depends on python_stubs to ensure py.typed marker and .pyi files are present
+# This is required for mypy type checking of code that imports from isaacteleop
+add_custom_target(python_wheel ALL
+    COMMAND ${CMAKE_COMMAND} -E echo "Building Python wheel with uv..."
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/wheels"
+    COMMAND uv build --wheel --out-dir "${CMAKE_BINARY_DIR}/wheels" "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>" ||
+            python3 -m build --wheel --outdir "${CMAKE_BINARY_DIR}/wheels" "${CMAKE_BINARY_DIR}/python_package/$<CONFIG>"
+    DEPENDS python_stubs
+    WORKING_DIRECTORY "${CMAKE_BINARY_DIR}"
+    COMMENT "Building Python wheel with uv (fallback to python -m build)"
+)
+
+# Install the wheel
+install(DIRECTORY "${CMAKE_BINARY_DIR}/wheels/"
+    DESTINATION wheels
+    FILES_MATCHING PATTERN "*.whl"
+)

@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[project]
+name = "isaacteleop-retargeting-engine"
+version = "0.0.0"  # Internal tests - not versioned
+description = "Retargeting engine type system for Isaac Teleop"
+requires-python = ">=3.10,<3.14"
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "mypy",
+    "numpy",
+    "scipy",
+    "types-PyYAML",
+    "scipy-stubs",
+]
+test = [
+    "pytest",
+    "numpy",
+    "scipy",
+]
+# Mirrors src/core/python/requirements-grounding.txt. The Sharpa unit test
+# imports robotic_grounding (staged into PYTHONPATH from the wheel build);
+# its runtime deps come from this extra.
+grounding = [
+    "numpy",
+    "scipy",
+    "torch>=2.7.0",
+    "pin>=2.7",
+    "pin-pink>=4.0",
+    "loop-rate-limiters",
+    "daqp",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+# Prevent pytest from recursing into parent directories
+norecursedirs = [".git", ".venv", "build", "dist", "*.egg", "__pycache__"]
+
+[tool.mypy]
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = false
+check_untyped_defs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+strict_equality = true
+
+# Show error codes
+show_error_codes = true
+show_column_numbers = true
+pretty = true
+
+# Exclude test files from strict checking
+exclude = [
+    "test_.*",
+]

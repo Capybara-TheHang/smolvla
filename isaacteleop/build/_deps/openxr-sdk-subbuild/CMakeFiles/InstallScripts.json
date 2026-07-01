@@ -1,0 +1,7 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/lightwheel/workspace/smolvla/isaacteleop/build/_deps/openxr-sdk-subbuild/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

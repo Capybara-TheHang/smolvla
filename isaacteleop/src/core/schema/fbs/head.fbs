@@ -1,0 +1,34 @@
+// SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
+include "pose.fbs";
+include "timestamp.fbs";
+
+namespace core;
+
+// Head pose data.
+// All fields are always present when the parent Tracked/Record wrapper's data is non-null.
+table HeadPose {
+    // The concrete pose data
+    pose: Pose (id: 0);
+
+    // Whether the head pose data is valid
+    is_valid: bool (id: 1);
+}
+
+// Tracked wrapper for the in-memory tracker API (data is null when head is inactive).
+table HeadPoseTracked {
+    data: HeadPose (id: 0);
+}
+
+// MCAP recording wrapper for HeadPose.
+//
+// Record types are the root types written to MCAP channels by the McapRecorder.
+// Trackers serialize into Record types via their serialize() method, but the
+// public query API returns the inner data type directly.
+table HeadPoseRecord {
+    data: HeadPose (id: 0);
+    timestamp: DeviceDataTimestamp (id: 1);
+}
+
+root_type HeadPoseRecord;

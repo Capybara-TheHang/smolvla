@@ -1,0 +1,16 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[project]
+name = "teleop-ros2-example"
+version = "0.1.0"
+description = "Isaac Teleop ROS2 Example"
+requires-python = ">=3.10,<3.14"
+dependencies = [
+    "isaacteleop[cloudxr,grounding,retargeters]",
+    "msgpack",
+    "msgpack-numpy",
+    # The ROS node installs pink_ik and dexpilot together. Require nlopt>=2.8 so
+    # dex-retargeting resolves to 0.5.x, keeping the env on NumPy 2 / Pinocchio 3.
+    "nlopt>=2.8.0",
+]

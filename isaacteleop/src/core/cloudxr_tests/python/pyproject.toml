@@ -1,0 +1,29 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+[project]
+name = "teleopcore-cloudxr-tests"
+version = "0.0.0"  # Internal tests - not versioned
+description = "CloudXR launcher and runtime unit tests for TeleopCore"
+requires-python = ">=3.10,<3.14"
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio>=1.3.0",
+    "numpy",
+]
+test = [
+    "pytest",
+    "pytest-asyncio>=1.3.0",
+    "numpy",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+asyncio_mode = "auto"
+# Prevent pytest from recursing into parent directories
+norecursedirs = [".git", ".venv", "build", "dist", "*.egg", "__pycache__"]
