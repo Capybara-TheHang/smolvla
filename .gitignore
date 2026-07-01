@@ -1,3 +1,7 @@
 checkpoints/
 outputs/
 isaacteleop/examples/g1_wuji_teleop/data/
+cmd
+lerobot/examples/g1_wuji/convert.sh
+lerobot/examples/g1_wuji/train.sh
+lerobot/src

@@ -176,3 +176,10 @@ outputs/
 *.urdf
 *.xml
 *.part
+
+
+
+__pycache__/
+*.py[cod]
+examples/g1_wuji/output/
+
