@@ -7,3 +7,6 @@ cmd
 lerobot/examples/g1_wuji/convert.sh
 lerobot/examples/g1_wuji/train.sh
 lerobot/src
+
+lerobot/examples/g1_wuji/output
+isaacteleop/examples/g1_wuji_teleop/python/g1_wuji_teleop/__pycache__
