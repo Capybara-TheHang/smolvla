@@ -1,0 +1,51 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+scene:
+  usd_path: null
+  prim_path: /World/Scene
+
+simulation:
+  dt: 0.016666666666666666
+  light_intensity: 3000.0
+
+robot:
+  variant: g1_wuji
+  prim_path: /World/G1Wuji
+  usd_path: assets/g1_wuji/g1_wuji.usd
+  initial_world_position: [0.0, 0.0, 0.8]
+  initial_world_orientation_xyzw: [0.0, 0.70710678, 0.70710678, 0.0]
+  initial_hand_joint_positions: {}
+
+  contact_optimization:
+    enabled: true
+    hand_cylinder_only: true
+    keep_tabletop_collision: true
+    keep_floor_collision: false
+    keep_table_leg_collision: false
+    disable_cylinder_gravity_without_tabletop: false
+    disable_left_side_collision: true
+    left_side_collision_keywords: [/left, left_]
+    hand_collision_keywords: [hand, wujihand, finger, thumb, index, middle, ring, pinky, palm]
+    hand_contact_offset_m: 0.01
+    hand_rest_offset_m: 0.002
+    cylinder_contact_offset_m: 0.01
+    cylinder_rest_offset_m: 0.001
+    robot_max_depenetration_velocity: 1.5
+    cylinder_max_depenetration_velocity: 2.5
+    robot_solver_position_iteration_count: 24
+    robot_solver_velocity_iteration_count: 6
+    cylinder_solver_position_iteration_count: 24
+    cylinder_solver_velocity_iteration_count: 6
+    grasp_static_friction: 0.7
+    grasp_dynamic_friction: 0.6
+    grasp_friction_combine_mode: average
+    table_static_friction: 0.9
+    table_dynamic_friction: 0.7
+    table_friction_combine_mode: average
+    object_linear_damping: 0.03
+    object_angular_damping: 0.03
+    finger_effort_limit_sim: 20.0
+    finger_velocity_limit_sim: 5.0
+    finger_stiffness: 600.0
+    finger_damping: 70.0
