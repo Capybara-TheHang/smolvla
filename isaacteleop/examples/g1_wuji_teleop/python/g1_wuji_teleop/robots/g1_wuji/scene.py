@@ -25,24 +25,24 @@ CYLINDER_HEIGHT_M = 0.10
 PROP_RANDOMIZATION_SPECS = {
     BLUE_CUBE_PRIM_PATH: {
         "center": (
-            TABLE_TOP_CENTER_M[0] - 0.1,
-            TABLE_TOP_CENTER_M[1] - 0.05,
+            TABLE_TOP_CENTER_M[0] - 0.05,
+            TABLE_TOP_CENTER_M[1] - 0.1,
             TABLETOP_SURFACE_Z_M + CUBE_SIDE_M * 0.5,
         ),
-        "radius_m": 0.03,
+        "radius_m": 0.04,
     },
     RED_CUBE_PRIM_PATH: {
         "center": (
-            TABLE_TOP_CENTER_M[0] + 0.1,
-            TABLE_TOP_CENTER_M[1] - 0.05,
+            TABLE_TOP_CENTER_M[0] + 0.2,
+            TABLE_TOP_CENTER_M[1] - 0.1,
             TABLETOP_SURFACE_Z_M + CUBE_SIDE_M * 0.5,
         ),
-        "radius_m": 0.03,
+        "radius_m": 0.04,
     },
     GRASP_CYLINDER_PRIM_PATH: {
         "center": (
-            TABLE_TOP_CENTER_M[0],
-            TABLE_TOP_CENTER_M[1] - 0.2,
+            TABLE_TOP_CENTER_M[0]+ 0.1,
+            TABLE_TOP_CENTER_M[1] - 0.3,
             TABLETOP_SURFACE_Z_M + CYLINDER_HEIGHT_M * 0.5,
         ),
         "radius_m": 0.05,

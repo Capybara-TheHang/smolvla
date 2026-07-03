@@ -19,7 +19,7 @@ POLICY_PATH="${POLICY_PATH:-${SMOLVLA_ROOT}/checkpoints/smolvla_base}"
 VLM_MODEL_NAME="${VLM_MODEL_NAME:-${SMOLVLA_ROOT}/checkpoints/SmolVLM2-500M-Video-Instruct}"
 
 # 转换数据时使用的 repo_id，必须和 convert.sh 里的 REPO_ID 保持一致。
-DATASET_REPO_ID="${DATASET_REPO_ID:-local/g1_wuji_112339}"
+DATASET_REPO_ID="${DATASET_REPO_ID:-local/g1_wuji_0}"
 
 # 转换后的 LeRobotDataset 根目录，不是 isaacteleop 的原始 session 目录。
 DATASET_ROOT="${DATASET_ROOT:-${SMOLVLA_ROOT}/lerobot/examples/g1_wuji/output/dataset1}"

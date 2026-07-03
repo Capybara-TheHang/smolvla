@@ -53,9 +53,11 @@ from .robots.g1_wuji.runtime import (
     wuji_hand_runtime_config,
 )
 from .robots.g1_wuji.scene import (
+    BLUE_CUBE_PRIM_PATH,
     ContactOptimizationConfig,
     G1WujiSceneConfig,
     PROP_RANDOMIZATION_SPECS,
+    RED_CUBE_PRIM_PATH,
     design_g1_wuji_scene,
 )
 
@@ -3027,6 +3029,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     prop_randomization_specs = {} if scene_usd is not None else PROP_RANDOMIZATION_SPECS
     prop_rigid_body_views: dict[str, Any] = {}
     prop_default_transforms: dict[str, Any] = {}
+    blue_cube_color = (0.05, 0.22, 0.95)
+    red_cube_color = (0.92, 0.06, 0.04)
+    cube_colors_swapped = False
+    cube_color_mapping = {
+        "BlueCube": "blue",
+        "RedCube": "red",
+    }
 
     def get_prop_rigid_body_view(prim_path: str) -> Any:
         view = prop_rigid_body_views.get(prim_path)
@@ -3046,6 +3055,50 @@ def main(argv: Sequence[str] | None = None) -> int:
             view, device=sim.device
         )
         return view
+
+    def set_shape_display_color(
+        prim_path: str, color: tuple[float, float, float]
+    ) -> None:
+        if stage is None:
+            return
+        mesh_prim = stage.GetPrimAtPath(f"{prim_path}/geometry/mesh")
+        if mesh_prim is None or not mesh_prim.IsValid():
+            print(
+                f"[{status_label}] warning: cannot set color, mesh not found for {prim_path}",
+                flush=True,
+            )
+            return
+        color_attr = UsdGeom.Gprim(mesh_prim).CreateDisplayColorAttr()
+        color_attr.Set([Gf.Vec3f(*(float(value) for value in color))])
+
+    def randomize_cube_colors() -> None:
+        nonlocal cube_colors_swapped, cube_color_mapping
+        if stage is None or not prop_randomization_specs:
+            return
+        cube_colors_swapped = bool(prop_randomization_rng.integers(0, 2))
+        if cube_colors_swapped:
+            blue_path_color = red_cube_color
+            red_path_color = blue_cube_color
+            cube_color_mapping = {
+                "BlueCube": "red",
+                "RedCube": "blue",
+            }
+        else:
+            blue_path_color = blue_cube_color
+            red_path_color = red_cube_color
+            cube_color_mapping = {
+                "BlueCube": "blue",
+                "RedCube": "red",
+            }
+
+        set_shape_display_color(BLUE_CUBE_PRIM_PATH, blue_path_color)
+        set_shape_display_color(RED_CUBE_PRIM_PATH, red_path_color)
+        print(
+            f"[{status_label}] randomized cube colors: "
+            f"BlueCube appears {cube_color_mapping['BlueCube']}, "
+            f"RedCube appears {cube_color_mapping['RedCube']}",
+            flush=True,
+        )
 
     def randomize_scene_props() -> None:
         if stage is None or not prop_randomization_specs:
@@ -3079,6 +3132,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ),
             flush=True,
         )
+        randomize_cube_colors()
 
     for prop_prim_path in prop_randomization_specs:
         get_prop_rigid_body_view(prop_prim_path)
@@ -3186,7 +3240,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     print(
         f"[{status_label}] SmolVLA task keys: "
-        f"1={smolvla_tasks[1]!r}, 2={smolvla_tasks[2]!r}.",
+        f"1={smolvla_tasks[1]!r}, 2={smolvla_tasks[2]!r}. "
+        "D starts recording; D or R finishes and saves an active recording; "
+        "G discards the active recording.",
         flush=True,
     )
 
@@ -3217,6 +3273,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     keyboard_start_requested = False
     keyboard_reset_requested = False
     keyboard_data_requested = False
+    keyboard_discard_requested = False
     keyboard_task_requested: int | None = None
     selected_smolvla_task_id: int | None = None
     selected_smolvla_task: str | None = None
@@ -3236,6 +3293,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     def on_keyboard_event(event, *args, **kwargs):
         nonlocal keyboard_data_requested, keyboard_reset_requested
+        nonlocal keyboard_discard_requested
         nonlocal keyboard_start_requested, keyboard_task_requested
         if event.type == carb.input.KeyboardEventType.KEY_PRESS:
             if event.input == carb.input.KeyboardInput.B:
@@ -3244,6 +3302,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 keyboard_reset_requested = True
             elif event.input == carb.input.KeyboardInput.D:
                 keyboard_data_requested = True
+            elif keyboard_input_matches(event.input, ("G", "KEY_G")):
+                keyboard_discard_requested = True
             elif keyboard_input_matches(
                 event.input,
                 ("KEY_1", "DIGIT_1", "NUM_1", "N1", "ONE", "K1", "NUMBER_1"),
@@ -3428,7 +3488,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if smolvla_recorder.active:
             print(
                 f"[{status_label}] SmolVLA task switch ignored while recording; "
-                "press D to stop first.",
+                "press D/R to finish and save, or G to discard first.",
                 flush=True,
             )
             return
@@ -3501,6 +3561,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "available_tasks": smolvla_tasks,
                 "right_hand_joint_names": list(wuji_hand_config.right_joint_names),
                 "camera_specs": smolvla_camera_specs,
+                "cube_colors_swapped": cube_colors_swapped,
+                "cube_color_mapping": dict(cube_color_mapping),
             }
         )
 
@@ -3566,6 +3628,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     left_side_freeze_config.enabled_from_start
                     or left_side_freeze_config.enabled_after_calibration
                 ),
+                "cube_colors_swapped": cube_colors_swapped,
+                "cube_color_mapping": dict(cube_color_mapping),
             },
         )
         smolvla_recorder.record(frame)
@@ -3593,8 +3657,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         keyboard_reset_requested = False
         data_button_rising = keyboard_data_requested
         keyboard_data_requested = False
+        discard_button_rising = keyboard_discard_requested
+        keyboard_discard_requested = False
         task_button_rising = keyboard_task_requested
         keyboard_task_requested = None
+
+        if discard_button_rising:
+            if smolvla_recorder.discard(reason="keyboard_g"):
+                data_button_rising = False
+            else:
+                print(
+                    f"[{status_label}] SmolVLA discard ignored: no active recording.",
+                    flush=True,
+                )
 
         if reset_button_rising:
             if smolvla_recorder.active:
@@ -3607,7 +3682,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             reset_teleop_calibration()
             print(
                 f"[{status_label}] teleop reset; robot returned to its initial joint pose. "
-                "Press keyboard 1 or 2 to select a SmolVLA task, then B to recalibrate.",
+                "Press keyboard 1 or 2 to select a SmolVLA task, then B to recalibrate. "
+                "R saves an active recording unless you press G to discard it first.",
                 flush=True,
             )
 
@@ -3642,8 +3718,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(
                     f"[{status_label}] teleop is disarmed; press keyboard B to recalibrate "
                     "and start teleop. Press keyboard 1/2 to select the SmolVLA task, "
-                    "then press D after calibration to record samples. Press keyboard R "
-                    "to force reset back to this state.",
+                    "then press D after calibration to start recording. Press D again "
+                    "or R to finish and save; press G to discard the active recording.",
                     flush=True,
                 )
                 start_waiting_announced = True

@@ -1,0 +1,13 @@
+python /home/lightwheel/workspace/smolvla_github_private/isaacteleop/examples/g1_wuji_teleop/scripts/g1_wuji_play.py \
+    --backend isaac \
+    --viz kit \
+    --enable_cameras \
+    --policy-host 127.0.0.1 \
+    --policy-fps 15 \
+    --warmup-steps 60 \
+    --camera-attach-retries 8 \
+    --camera-attach-retry-steps 20 \
+    --chunk-steps 10 \
+    --status-log-interval-s 2 \
+    --action-log-every 10 \
+    --max-steps 0
