@@ -42,7 +42,7 @@ PROP_RANDOMIZATION_SPECS = {
     GRASP_CYLINDER_PRIM_PATH: {
         "center": (
             TABLE_TOP_CENTER_M[0]+ 0.1,
-            TABLE_TOP_CENTER_M[1] - 0.3,
+            TABLE_TOP_CENTER_M[1] - 0.2,
             TABLETOP_SURFACE_Z_M + CYLINDER_HEIGHT_M * 0.5,
         ),
         "radius_m": 0.05,

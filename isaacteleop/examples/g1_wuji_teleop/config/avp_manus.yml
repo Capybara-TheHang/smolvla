@@ -29,8 +29,8 @@ robot:
     activate_on_calibration: false  # 三视口布局启用时不要让头部相机直接抢占 Kit 主视口
     prim_path: /World/TeleopTargets/HeadViewCamera  # 头部相机的 USD prim 路径
     resolution_px: [640, 480]  # 头部相机图像分辨率 [宽, 高]；例如 [640, 480]、[1280, 720]
-    translation_offset_m: [0.05, 0.0, 0.3836842]  # 相机相对头部连杆局部坐标系的位置偏移 [x, y, z]，单位为米
-    orientation_offset_rpy_deg: [50.0, 0.0, -90.0]  # 相机相对头部连杆局部坐标系的朝向补偿 [roll, pitch, yaw]，单位为度；如果头部视角方向不对，优先调整这里
+    translation_offset_m: [0.1, 0.1, 0.5]  # 相机相对头部连杆局部坐标系的位置偏移 [x, y, z]，单位为米
+    orientation_offset_rpy_deg: [40.0, 0.0, -90.0]  # 相机相对头部连杆局部坐标系的朝向补偿 [roll, pitch, yaw]，单位为度；如果头部视角方向不对，优先调整这里
     horizontal_aperture_mm: 20.955  # USD 相机水平传感器尺寸，用于决定视场角
     focal_length_mm: 10.0  # USD 相机焦距，结合 aperture 控制初始第一人称视场角
     clipping_range_m: [0.01, 1000.0]  # 相机近/远裁剪范围 [near, far]，单位为米
@@ -39,10 +39,10 @@ robot:
     enabled: true  # 创建一个固定在桌面上方、视线垂直桌面的顶视相机
     prim_path: /World/TeleopTargets/TableOverheadCamera  # 桌面顶视相机的 USD prim 路径
     resolution_px: [640, 480]  # 桌面顶视图像分辨率 [宽, 高]；例如 [640, 480]、[1280, 720]
-    translation_m: [0.0, 0.5, 1.55]  # 相机世界坐标 [x, y, z]，默认位于桌面中心正上方，单位为米
-    orientation_rpy_deg: [0.0, 0.0, 0.0]  # USD 相机默认沿局部 -Z 看；这里保持垂直向下看桌面
+    translation_m: [0.05, 0.1, 0.85]  # 相机世界坐标 [x, y, z]，默认位于桌面中心正上方，单位为米
+    orientation_rpy_deg: [90.0, 0.0, -10.0]  # USD 相机默认沿局部 -Z 看；这里保持垂直向下看桌面
     horizontal_aperture_mm: 20.955  # USD 相机水平传感器尺寸，用于决定视场角
-    focal_length_mm: 16.0  # USD 相机焦距；当前高度下覆盖桌面主要操作区域
+    focal_length_mm: 5.0  # USD 相机焦距；当前高度下覆盖桌面主要操作区域
     clipping_range_m: [0.01, 1000.0]  # 相机近/远裁剪范围 [near, far]，单位为米
 
   head_view_xr_display:
@@ -95,7 +95,7 @@ robot:
     finger_damping: 70.0  # 手指位置驱动阻尼
 
 avp:
-  ee_pose_source: controller  # 默认保留原始路径；使用 PICO 控制器末端位姿时切换为 `controller`
+  ee_pose_source: wrist  # 默认保留原始路径；使用 PICO 控制器末端位姿时切换为 `controller`
   ee_hand_joint: wrist  # 仅在 ee_pose_source=hand_tracking / wrist / palm 时使用；`wrist` 最接近原始 AVP 路径
   controller_pose_source: aim  # 仅在 ee_pose_source=controller 时使用；PICO 控制器模式优先尝试 `aim`，需要时再尝试 `grip`
   controller_fallback_enabled: true  # 只对手部追踪路径有意义；PICO 控制器模式下通常建议设为 false
