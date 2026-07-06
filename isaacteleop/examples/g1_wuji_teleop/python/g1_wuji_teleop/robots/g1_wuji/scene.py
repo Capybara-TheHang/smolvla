@@ -94,8 +94,8 @@ class ContactOptimizationConfig:
     object_angular_damping: float = 0.04
     finger_effort_limit_sim: float = 45.0
     finger_velocity_limit_sim: float = 5.0
-    finger_stiffness: float = 800.0
-    finger_damping: float = 70.0
+    finger_stiffness: float = 3000.0
+    finger_damping: float = 500.0
 
 
 @dataclass(frozen=True)
@@ -201,7 +201,7 @@ def _wuji_actuators(ImplicitActuatorCfg, contact: ContactOptimizationConfig):
     else:
         finger_effort_limit_sim = 100.0
         finger_velocity_limit_sim = 6.0
-        finger_stiffness = 1500.0
+        finger_stiffness = 3000.0
         finger_damping = 100.0
 
     common = {
@@ -216,15 +216,15 @@ def _wuji_actuators(ImplicitActuatorCfg, contact: ContactOptimizationConfig):
             joint_names_expr=["right_shoulder_.*", "right_elbow_joint"],
             effort_limit_sim=5.0,
             velocity_limit_sim=3.0,
-            stiffness=400.0,
-            damping=80.0,
+            stiffness=1500.0,
+            damping=300.0,
         ),
         "left_arm": ImplicitActuatorCfg(
             joint_names_expr=["left_shoulder_.*", "left_elbow_joint"],
             effort_limit_sim=5.0,
             velocity_limit_sim=3.0,
-            stiffness=400.0,
-            damping=80.0,
+            stiffness=1500.0,
+            damping=300.0,
         ),
         "wrist": ImplicitActuatorCfg(
             joint_names_expr=[
@@ -237,8 +237,8 @@ def _wuji_actuators(ImplicitActuatorCfg, contact: ContactOptimizationConfig):
             ],
             effort_limit_sim=300.0,
             velocity_limit_sim=8.0,
-            stiffness=400.0,
-            damping=80.0,
+            stiffness=1500.0,
+            damping=300.0,
         ),
     }
     common["fingers"] = ImplicitActuatorCfg(

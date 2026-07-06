@@ -91,11 +91,11 @@ robot:
     object_angular_damping: 0.03  # 圆柱/物块角阻尼；过高会显得发粘
     finger_effort_limit_sim: 20.0  # 手指最大驱动力；过大会把物体压进碰撞体
     finger_velocity_limit_sim: 5.0  # 手指最大速度；过快更容易瞬时穿模
-    finger_stiffness: 600.0  # 手指位置驱动刚度；过高更容易硬穿透并粘住
-    finger_damping: 70.0  # 手指位置驱动阻尼
+    finger_stiffness: 1500.0  # 手指位置驱动刚度；过高更容易硬穿透并粘住
+    finger_damping: 100.0  # 手指位置驱动阻尼
 
 avp:
-  ee_pose_source: wrist  # 默认保留原始路径；使用 PICO 控制器末端位姿时切换为 `controller`
+  ee_pose_source: controller  # 默认保留原始路径；使用 PICO 控制器末端位姿时切换为 `controller`
   ee_hand_joint: wrist  # 仅在 ee_pose_source=hand_tracking / wrist / palm 时使用；`wrist` 最接近原始 AVP 路径
   controller_pose_source: aim  # 仅在 ee_pose_source=controller 时使用；PICO 控制器模式优先尝试 `aim`，需要时再尝试 `grip`
   controller_fallback_enabled: true  # 只对手部追踪路径有意义；PICO 控制器模式下通常建议设为 false
