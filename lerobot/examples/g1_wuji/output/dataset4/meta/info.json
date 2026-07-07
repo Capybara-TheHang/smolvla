@@ -1,0 +1,179 @@
+{
+    "codebase_version": "v3.0",
+    "fps": 15,
+    "features": {
+        "observation.state": {
+            "dtype": "float32",
+            "shape": [
+                26
+            ],
+            "names": [
+                "ee.x",
+                "ee.y",
+                "ee.z",
+                "ee.rx",
+                "ee.ry",
+                "ee.rz",
+                "hand.j0",
+                "hand.j1",
+                "hand.j2",
+                "hand.j3",
+                "hand.j4",
+                "hand.j5",
+                "hand.j6",
+                "hand.j7",
+                "hand.j8",
+                "hand.j9",
+                "hand.j10",
+                "hand.j11",
+                "hand.j12",
+                "hand.j13",
+                "hand.j14",
+                "hand.j15",
+                "hand.j16",
+                "hand.j17",
+                "hand.j18",
+                "hand.j19"
+            ]
+        },
+        "action": {
+            "dtype": "float32",
+            "shape": [
+                26
+            ],
+            "names": [
+                "ee.dx",
+                "ee.dy",
+                "ee.dz",
+                "ee.drx",
+                "ee.dry",
+                "ee.drz",
+                "hand.target_j0",
+                "hand.target_j1",
+                "hand.target_j2",
+                "hand.target_j3",
+                "hand.target_j4",
+                "hand.target_j5",
+                "hand.target_j6",
+                "hand.target_j7",
+                "hand.target_j8",
+                "hand.target_j9",
+                "hand.target_j10",
+                "hand.target_j11",
+                "hand.target_j12",
+                "hand.target_j13",
+                "hand.target_j14",
+                "hand.target_j15",
+                "hand.target_j16",
+                "hand.target_j17",
+                "hand.target_j18",
+                "hand.target_j19"
+            ]
+        },
+        "observation.images.front": {
+            "dtype": "video",
+            "shape": [
+                480,
+                640,
+                3
+            ],
+            "names": [
+                "height",
+                "width",
+                "channels"
+            ],
+            "info": {
+                "video.height": 480,
+                "video.width": 640,
+                "video.codec": "av1",
+                "video.pix_fmt": "yuv420p",
+                "video.fps": 15,
+                "video.channels": 3,
+                "has_audio": false,
+                "video.g": 2,
+                "video.crf": 30,
+                "video.preset": 12,
+                "video.fast_decode": 0,
+                "video.video_backend": "pyav",
+                "video.extra_options": {},
+                "is_depth_map": false
+            }
+        },
+        "observation.images.table": {
+            "dtype": "video",
+            "shape": [
+                480,
+                640,
+                3
+            ],
+            "names": [
+                "height",
+                "width",
+                "channels"
+            ],
+            "info": {
+                "video.height": 480,
+                "video.width": 640,
+                "video.codec": "av1",
+                "video.pix_fmt": "yuv420p",
+                "video.fps": 15,
+                "video.channels": 3,
+                "has_audio": false,
+                "video.g": 2,
+                "video.crf": 30,
+                "video.preset": 12,
+                "video.fast_decode": 0,
+                "video.video_backend": "pyav",
+                "video.extra_options": {},
+                "is_depth_map": false
+            }
+        },
+        "timestamp": {
+            "dtype": "float32",
+            "shape": [
+                1
+            ],
+            "names": null
+        },
+        "frame_index": {
+            "dtype": "int64",
+            "shape": [
+                1
+            ],
+            "names": null
+        },
+        "episode_index": {
+            "dtype": "int64",
+            "shape": [
+                1
+            ],
+            "names": null
+        },
+        "index": {
+            "dtype": "int64",
+            "shape": [
+                1
+            ],
+            "names": null
+        },
+        "task_index": {
+            "dtype": "int64",
+            "shape": [
+                1
+            ],
+            "names": null
+        }
+    },
+    "total_episodes": 50,
+    "total_frames": 12396,
+    "total_tasks": 2,
+    "chunks_size": 1000,
+    "data_files_size_in_mb": 100,
+    "video_files_size_in_mb": 200,
+    "data_path": "data/chunk-{chunk_index:03d}/file-{file_index:03d}.parquet",
+    "video_path": "videos/{video_key}/chunk-{chunk_index:03d}/file-{file_index:03d}.mp4",
+    "robot_type": "g1_wuji",
+    "splits": {
+        "train": "0:50"
+    }
+}
