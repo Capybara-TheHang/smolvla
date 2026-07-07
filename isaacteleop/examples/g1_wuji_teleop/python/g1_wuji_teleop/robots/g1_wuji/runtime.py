@@ -16,185 +16,16 @@ import numpy as np
 
 from ...paths import app_root
 
-LEFT_WUJI_JOINTS = (
-    "left_finger1_joint1",
-    "left_finger1_joint2",
-    "left_finger1_joint3",
-    "left_finger1_joint4",
-    "left_finger2_joint1",
-    "left_finger2_joint2",
-    "left_finger2_joint3",
-    "left_finger2_joint4",
-    "left_finger3_joint1",
-    "left_finger3_joint2",
-    "left_finger3_joint3",
-    "left_finger3_joint4",
-    "left_finger4_joint1",
-    "left_finger4_joint2",
-    "left_finger4_joint3",
-    "left_finger4_joint4",
-    "left_finger5_joint1",
-    "left_finger5_joint2",
-    "left_finger5_joint3",
-    "left_finger5_joint4",
+from .robot.profiles import (
+    LEFT_WUJI_JOINTS,
+    RIGHT_WUJI_JOINTS,
+    WUJI_SKELETON21_OPENXR_NAMES,
+    _default_wuji_initial_joint_positions,
+    available_robot_variants,
+    normalize_robot_variant,
+    robot_profile_from_config,
+    with_robot_variant_override,
 )
-
-RIGHT_WUJI_JOINTS = tuple(
-    name.replace("left_", "right_", 1) for name in LEFT_WUJI_JOINTS
-)
-
-WUJI_SKELETON21_OPENXR_NAMES = (
-    "wrist",
-    "thumb_metacarpal",
-    "thumb_proximal",
-    "thumb_distal",
-    "thumb_tip",
-    "index_proximal",
-    "index_intermediate",
-    "index_distal",
-    "index_tip",
-    "middle_proximal",
-    "middle_intermediate",
-    "middle_distal",
-    "middle_tip",
-    "ring_proximal",
-    "ring_intermediate",
-    "ring_distal",
-    "ring_tip",
-    "little_proximal",
-    "little_intermediate",
-    "little_distal",
-    "little_tip",
-)
-
-FIXED_WUJI_HAND_CONFIG_DIR = "official/g1_wuji"
-
-
-def _default_wuji_initial_joint_positions() -> dict[str, float]:
-    return {
-        "left_finger1_joint1": 0.059,
-        "left_finger1_joint2": 0.059,
-        "left_finger1_joint3": 0.059,
-        "left_finger1_joint4": 0.0,
-        "left_finger2_joint1": 0.0,
-        "left_finger2_joint2": 0.0,
-        "left_finger2_joint3": 0.0,
-        "left_finger2_joint4": 0.0,
-        "left_finger3_joint1": 0.0,
-        "left_finger3_joint2": 0.0,
-        "left_finger3_joint3": 0.0,
-        "left_finger3_joint4": 0.0,
-        "left_finger4_joint1": 0.0,
-        "left_finger4_joint2": 0.0,
-        "left_finger4_joint3": 0.0,
-        "left_finger4_joint4": 0.0,
-        "left_finger5_joint1": 0.0,
-        "left_finger5_joint2": 0.0,
-        "left_finger5_joint3": 0.0,
-        "left_finger5_joint4": 0.0,
-        "right_finger1_joint1": 0.037,
-        "right_finger1_joint2": 0.037,
-        "right_finger1_joint3": 0.037,
-        "right_finger1_joint4": 0.0,
-        "right_finger2_joint1": 0.0,
-        "right_finger2_joint2": 0.0,
-        "right_finger2_joint3": 0.0,
-        "right_finger2_joint4": 0.0,
-        "right_finger3_joint1": 0.0,
-        "right_finger3_joint2": 0.0,
-        "right_finger3_joint3": 0.0,
-        "right_finger3_joint4": 0.0,
-        "right_finger4_joint1": 0.0,
-        "right_finger4_joint2": 0.0,
-        "right_finger4_joint3": 0.0,
-        "right_finger4_joint4": 0.0,
-        "right_finger5_joint1": 0.0,
-        "right_finger5_joint2": 0.0,
-        "right_finger5_joint3": 0.0,
-        "right_finger5_joint4": 0.0,
-    }
-
-
-@dataclass(frozen=True)
-class RobotProfile:
-    variant: str
-    robot_prim: str
-    default_usd_relpath: str
-    left_hand_joint_names: tuple[str, ...]
-    right_hand_joint_names: tuple[str, ...]
-    initial_hand_joint_positions: dict[str, float]
-    hand_retarget_backend: str
-    hand_wuji_config_dir: str | None
-    ik_body_names: dict[str, str]
-    ik_body_offset_pos: dict[str, tuple[float, float, float]]
-    ik_body_offset_quat_xyzw: dict[str, tuple[float, float, float, float]]
-    ik_target_orientation_correction_quat_xyzw: dict[
-        str, tuple[float, float, float, float]
-    ]
-    reference_body: str
-    reference_offset_pos: tuple[float, float, float]
-    reference_offset_quat_xyzw: tuple[float, float, float, float]
-    axis_signs: dict[str, float]
-    status_label: str
-
-
-ROBOT_PROFILES: dict[str, RobotProfile] = {
-    "g1_wuji": RobotProfile(
-        variant="g1_wuji",
-        robot_prim="/World/G1Wuji",
-        default_usd_relpath="assets/g1_wuji/g1_wuji.usd",
-        left_hand_joint_names=LEFT_WUJI_JOINTS,
-        right_hand_joint_names=RIGHT_WUJI_JOINTS,
-        initial_hand_joint_positions=_default_wuji_initial_joint_positions(),
-        hand_retarget_backend="wuji",
-        hand_wuji_config_dir=FIXED_WUJI_HAND_CONFIG_DIR,
-        ik_body_names={
-            "left": "left_wrist_yaw_link",
-            "right": "right_wrist_yaw_link",
-        },
-        ik_body_offset_pos={
-            "left": (0.0415, 0.003, 0.0),
-            "right": (0.0415, -0.003, 0.0),
-        },
-        ik_body_offset_quat_xyzw={
-            "left": (0.0, 0.0, 0.0, 1.0),
-            "right": (0.0, 0.0, 0.0, 1.0),
-        },
-        ik_target_orientation_correction_quat_xyzw={
-            "left": (0.5, 0.5, 0.5, 0.5),
-            "right": (-0.5, 0.5, 0.5, -0.5),
-        },
-        reference_body="torso_link",
-        reference_offset_pos=(0.0077774, 0.0000210, 0.3836842),
-        reference_offset_quat_xyzw=(0.0, 0.0, 0.0, 1.0),
-        axis_signs={},
-        status_label="G1-Wuji",
-    ),
-}
-
-
-def normalize_robot_variant(value: Any) -> str:
-    raw = str(value or "g1_wuji").strip().lower()
-    aliases = {
-        "g1wuji": "g1_wuji",
-        "g1-wuji": "g1_wuji",
-        "wuji": "g1_wuji",
-    }
-    normalized = aliases.get(raw, raw)
-    if normalized not in ROBOT_PROFILES:
-        raise ValueError(
-            f"Unsupported robot.variant={value!r}. Expected one of {sorted(ROBOT_PROFILES)}"
-        )
-    return normalized
-
-
-def robot_profile_from_config(config: Mapping[str, Any]) -> RobotProfile:
-    robot_config = config.get("robot", {})
-    if robot_config is None:
-        robot_config = {}
-    if not isinstance(robot_config, Mapping):
-        raise ValueError("Config field 'robot' must be a mapping")
-    return ROBOT_PROFILES[normalize_robot_variant(robot_config.get("variant"))]
 
 
 @dataclass(frozen=True)
@@ -208,6 +39,7 @@ class WujiHandRuntimeConfig:
     left_joint_names: tuple[str, ...] = LEFT_WUJI_JOINTS
     right_joint_names: tuple[str, ...] = RIGHT_WUJI_JOINTS
     axis_signs: dict[str, float] = field(default_factory=dict)
+    joint_aliases: dict[str, str] = field(default_factory=dict)
     retarget_backend: str = "wuji"
     status_label: str = "teleop"
     wuji_config_dir: Path | None = None
@@ -378,6 +210,7 @@ def wuji_hand_runtime_config(config: Mapping[str, Any]) -> WujiHandRuntimeConfig
         left_joint_names=profile.left_hand_joint_names,
         right_joint_names=profile.right_hand_joint_names,
         axis_signs=dict(profile.axis_signs),
+        joint_aliases=dict(profile.hand_joint_aliases),
         retarget_backend=profile.hand_retarget_backend,
         status_label=profile.status_label,
         wuji_config_dir=wuji_config_dir,
@@ -905,7 +738,13 @@ class AvpRobotFrameBinding:
 
 
 def ordered_hand_targets(
-    sample: Mapping[str, Any], side: str, target_names: Sequence[str]
+    sample: Mapping[str, Any],
+    side: str,
+    target_names: Sequence[str],
+    *,
+    joint_aliases: Mapping[str, str] | None = None,
+    axis_signs: Mapping[str, float] | None = None,
+    status_label: str = "teleop",
 ) -> np.ndarray | None:
     # Native Dex retargeting emits named joint output via TeleopMain.
     # Any backend/schema mismatch shows up here when remapping into the robot joint order.
@@ -918,8 +757,9 @@ def ordered_hand_targets(
         target_names=target_names,
         side=side,
         label="teleop_dex",
-        axis_signs={},
-        status_label="teleop",
+        axis_signs=axis_signs or {},
+        joint_aliases=joint_aliases,
+        status_label=status_label,
     )
 
 
@@ -1020,6 +860,7 @@ class WujiHandTargetBackend:
             side="left",
             label=self._config.retarget_backend,
             axis_signs=self._config.axis_signs,
+            joint_aliases=self._config.joint_aliases,
             status_label=self._config.status_label,
         )
         right_targets = _ordered_named_targets(
@@ -1029,6 +870,7 @@ class WujiHandTargetBackend:
             side="right",
             label=self._config.retarget_backend,
             axis_signs=self._config.axis_signs,
+            joint_aliases=self._config.joint_aliases,
             status_label=self._config.status_label,
         )
 
@@ -1070,6 +912,7 @@ class WujiHandTargetBackend:
             side="right",
             label=self._config.retarget_backend,
             axis_signs=self._config.axis_signs,
+            joint_aliases=self._config.joint_aliases,
             status_label=self._config.status_label,
         )
         if right_targets is not None:
@@ -1347,6 +1190,7 @@ def _ordered_named_targets(
     side: str,
     label: str,
     axis_signs: Mapping[str, float] | None = None,
+    joint_aliases: Mapping[str, str] | None = None,
     status_label: str = "teleop",
 ) -> np.ndarray | None:
     if values is None:
@@ -1374,6 +1218,12 @@ def _ordered_named_targets(
             prefixed_name = f"{side_prefix}{name}"
             normalized_values_by_name.setdefault(prefixed_name, value)
         values_by_name = normalized_values_by_name
+    if joint_aliases:
+        for target_name, source_name in joint_aliases.items():
+            if target_name in values_by_name:
+                continue
+            if source_name in values_by_name:
+                values_by_name[target_name] = values_by_name[source_name]
     missing = [name for name in target_names if name not in values_by_name]
     extra = [name for name in values_by_name if name not in set(target_names)]
     if missing or extra:

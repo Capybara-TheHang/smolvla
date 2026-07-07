@@ -43,6 +43,7 @@ from .robots.g1_wuji.runtime import (
     HandTargetPostProcessor,
     WujiHandRuntimeConfig,
     WujiHandTargetBackend,
+    available_robot_variants,
     as_torch,
     avp_frame_binding_runtime_config,
     matrix_to_quat_xyzw,
@@ -50,6 +51,7 @@ from .robots.g1_wuji.runtime import (
     openxr_pose_to_isaac_pose,
     ordered_hand_targets,
     robot_profile_from_config,
+    with_robot_variant_override,
     wuji_hand_runtime_config,
 )
 from .robots.g1_wuji.scene import (
@@ -1938,9 +1940,10 @@ def _scene_usd_path(
 def _robot_initial_world_position(
     config: Mapping[str, Any],
 ) -> tuple[float, float, float]:
+    profile = robot_profile_from_config(config)
     robot_config = config.get("robot", {})
     if robot_config is None:
-        return (0.0, 0.0, 0.0)
+        return profile.initial_world_position
     if not isinstance(robot_config, Mapping):
         raise ValueError("Config field 'robot' must be a mapping")
 
@@ -1948,16 +1951,17 @@ def _robot_initial_world_position(
         robot_config.get("initial_world_position"),
         name="robot.initial_world_position",
         length=3,
-        default=(0.0, 0.0, 0.0),
+        default=profile.initial_world_position,
     )
 
 
 def _robot_initial_world_orientation_xyzw(
     config: Mapping[str, Any],
 ) -> tuple[float, float, float, float]:
+    profile = robot_profile_from_config(config)
     robot_config = config.get("robot", {})
     if robot_config is None:
-        return (0.0, 0.0, 0.0, 1.0)
+        return profile.initial_world_orientation_xyzw
     if not isinstance(robot_config, Mapping):
         raise ValueError("Config field 'robot' must be a mapping")
 
@@ -1970,7 +1974,7 @@ def _robot_initial_world_orientation_xyzw(
         raw_quat,
         name="robot.initial_world_orientation_xyzw",
         length=4,
-        default=(0.0, 0.0, 0.0, 1.0),
+        default=profile.initial_world_orientation_xyzw,
     )
     norm = sum(value * value for value in quat) ** 0.5
     if norm < 1.0e-8:
@@ -2013,7 +2017,7 @@ def _arm_ik_runtime_config(config: Mapping[str, Any]) -> ArmIkRuntimeConfig:
             target_orientation_correction_quat_xyzw=(
                 profile.ik_target_orientation_correction_quat_xyzw["left"]
             ),
-            joint_names=ARM_JOINTS["left"],
+            joint_names=profile.arm_joint_names["left"],
         ),
         "right": ArmIkSideConfig(
             body_name=profile.ik_body_names["right"],
@@ -2022,7 +2026,7 @@ def _arm_ik_runtime_config(config: Mapping[str, Any]) -> ArmIkRuntimeConfig:
             target_orientation_correction_quat_xyzw=(
                 profile.ik_target_orientation_correction_quat_xyzw["right"]
             ),
-            joint_names=ARM_JOINTS["right"],
+            joint_names=profile.arm_joint_names["right"],
         ),
     }
 
@@ -2729,6 +2733,16 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
     )
     parser.add_argument("--config", default=str(_default_config_path()))
     parser.add_argument(
+        "--robot",
+        "--robot-variant",
+        dest="robot_variant",
+        default=None,
+        help=(
+            "Optional robot variant override. Available variants: "
+            f"{', '.join(available_robot_variants())}."
+        ),
+    )
+    parser.add_argument(
         "--input-profile",
         choices=INPUT_PROFILE_CHOICES,
         default=INPUT_PROFILE_CONFIG,
@@ -2800,6 +2814,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     teleop_config = apply_input_profile_config(
         _load_yaml_file(config_path), args.input_profile
     )
+    teleop_config = with_robot_variant_override(
+        teleop_config, args.robot_variant
+    )
     teleop_config["_config_dir"] = str(config_path.parent)
     robot_profile = robot_profile_from_config(teleop_config)
     status_label = robot_profile.status_label
@@ -2862,6 +2879,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     scene_config = G1WujiSceneConfig(
         robot_prim=robot_prim,
         robot_usd=robot_usd,
+        robot_profile=robot_profile,
         initial_world_position=initial_world_position,
         initial_world_orientation_xyzw=initial_world_orientation_xyzw,
         initial_hand_joint_positions=wuji_hand_config.initial_joint_positions,
@@ -3185,22 +3203,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
     robot_default_joint_pos = as_torch(robot.data.default_joint_pos).clone()
     robot_default_joint_vel = as_torch(robot.data.default_joint_vel).clone()
-    left_elbow_lock_joint_ids, left_elbow_lock_joint_names = robot.find_joints(
-        [LEFT_ELBOW_LOCK_JOINT],
-        preserve_order=True,
-    )
-    if LEFT_ELBOW_LOCK_JOINT not in left_elbow_lock_joint_names:
-        available = list(getattr(robot.data, "joint_names", []) or [])
-        raise RuntimeError(
-            f"{status_label} USD is missing locked joint {LEFT_ELBOW_LOCK_JOINT!r}; "
-            f"available count={len(available)}"
+    left_lock_joint_name = robot_profile.left_lock_joint_name
+    left_elbow_lock_joint_id: int | None = None
+    left_elbow_lock_target = None
+    if left_lock_joint_name:
+        left_elbow_lock_joint_ids, left_elbow_lock_joint_names = robot.find_joints(
+            [left_lock_joint_name],
+            preserve_order=True,
         )
-    left_elbow_lock_joint_id = int(left_elbow_lock_joint_ids[0])
-    left_elbow_lock_target = robot_default_joint_pos[
-        :, [left_elbow_lock_joint_id]
-    ].clone()
+        if left_lock_joint_name not in left_elbow_lock_joint_names:
+            available = list(getattr(robot.data, "joint_names", []) or [])
+            raise RuntimeError(
+                f"{status_label} USD is missing locked joint {left_lock_joint_name!r}; "
+                f"available count={len(available)}"
+            )
+        left_elbow_lock_joint_id = int(left_elbow_lock_joint_ids[0])
+        left_elbow_lock_target = robot_default_joint_pos[
+            :, [left_elbow_lock_joint_id]
+        ].clone()
 
     def hold_locked_arm_joints() -> None:
+        if left_elbow_lock_joint_id is None or left_elbow_lock_target is None:
+            return
         robot.set_joint_position_target(
             target=left_elbow_lock_target,
             joint_ids=[left_elbow_lock_joint_id],
@@ -3218,6 +3242,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         joint_ids=right_joint_ids,
     )
     hold_locked_arm_joints()
+    left_lock_target_label = (
+        f"{float(left_elbow_lock_target[0, 0].detach().cpu().item()):.4f}rad"
+        if left_elbow_lock_target is not None
+        else "none"
+    )
 
     print(
         f"{status_label} teleop scene ready: "
@@ -3225,7 +3254,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         f"{len(left_joint_ids)} left hand joints, {len(right_joint_ids)} right hand joints, "
         f"hand_retarget={'native_dex' if use_native_hand_targets else wuji_hand_config.retarget_backend}, "
         f"arm_ik={arm_ik_config.enabled}, "
-        f"left_elbow_lock={float(left_elbow_lock_target[0, 0].detach().cpu().item()):.4f}rad, "
+        f"left_lock_joint={left_lock_joint_name or 'none'}, "
+        f"left_lock_target={left_lock_target_label}, "
         f"avp_frame_binding={avp_frame_binding_config.enabled}, "
         f"whole_body_yaw={whole_body_yaw is not None}, "
         f"head_tilt={avp_frame_binding_config.head_tilt_following}, "
@@ -3754,12 +3784,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                     sample,
                     "left",
                     wuji_hand_config.left_joint_names,
+                    joint_aliases=wuji_hand_config.joint_aliases,
+                    axis_signs=wuji_hand_config.axis_signs,
+                    status_label=wuji_hand_config.status_label,
                 )
             )
             raw_right_targets = ordered_hand_targets(
                 sample,
                 "right",
                 wuji_hand_config.right_joint_names,
+                joint_aliases=wuji_hand_config.joint_aliases,
+                axis_signs=wuji_hand_config.axis_signs,
+                status_label=wuji_hand_config.status_label,
             )
         elif left_side_frozen:
             raw_left_targets = None

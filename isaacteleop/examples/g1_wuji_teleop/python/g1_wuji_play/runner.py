@@ -92,8 +92,19 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
 
     if backend == "isaac":
         from .simulation import add_isaac_app_launcher_args
+        from g1_wuji_teleop.robots.g1_wuji.runtime import available_robot_variants
 
         parser.add_argument("--config", default=None)
+        parser.add_argument(
+            "--robot",
+            "--robot-variant",
+            dest="robot_variant",
+            default=None,
+            help=(
+                "Optional robot variant override. Available variants: "
+                f"{', '.join(available_robot_variants())}."
+            ),
+        )
         parser.add_argument("--robot-usd", default=None)
         parser.add_argument("--robot-prim", default=None)
         parser.add_argument("--scene-usd", default=None)
@@ -118,6 +129,12 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         parser.add_argument("--policy-fps", type=float, default=15.0)
         parser.add_argument("--chunk-steps", type=int, default=10)
         parser.add_argument("--ik-smoothing-alpha", type=float, default=0.80)
+        parser.add_argument(
+            "--hold-open-hand-duration-s",
+            type=float,
+            default=1.5,
+            help="Seconds for the O-key hold-open action to smoothly open the right hand.",
+        )
         parser.add_argument("--policy-host", default="127.0.0.1")
         parser.add_argument("--policy-port", type=int, default=5555)
         parser.add_argument("--policy-timeout-s", type=float, default=60.0)

@@ -8,6 +8,7 @@ python /home/lightwheel/workspace/smolvla_github_private/isaacteleop/examples/g1
     --camera-attach-retries 8 \
     --camera-attach-retry-steps 20 \
     --chunk-steps 10 \
+    --hold-open-hand-duration-s 1.5 \
     --status-log-interval-s 2 \
     --action-log-every 10 \
     --max-steps 0

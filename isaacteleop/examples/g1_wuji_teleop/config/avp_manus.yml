@@ -4,11 +4,11 @@
 session:
   app_name: AvpManusTeleopMain  # TeleopSession/OpenXR 会话名，用于运行时识别
 
-layout: null  # 外部场景 USD 路径；例如 /home/lightwheel/workspace/lw_benchhub/assets/scene04_1.usd。留空时使用 scene.py 内置桌面/方块/圆柱抓取场景
+layout:  # 外部场景 USD 路径；例如 /home/lightwheel/workspace/lw_benchhub/assets/scene04_1.usd。留空时使用 scene.py 内置桌面/方块/圆柱抓取场景
 
 robot:
-  # 这个示例只保留 `g1_wuji` 机器人变体。
-  variant: g1_wuji  # 选择要加载的机器人变体，同时决定手部关节集合、默认 USD 和重定向配置
+  # G1-Wuji 配置；North POC2.2 请使用 avp_manus_north_poc2_2.yml。
+  variant: g1_wuji  # 选择要加载的机器人变体，同时决定关节集合、默认 USD 和重定向配置
   initial_world_position: [0.0, 0.0, 0.8]  # 机器人根节点初始世界坐标 [x, y, z]，单位为米
   initial_world_orientation_xyzw: [0.0, 0.70710678, 0.70710678, 0.0]  # 机器人根节点初始朝向四元数 [x, y, z, w]
 

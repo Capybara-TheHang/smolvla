@@ -178,6 +178,7 @@ class IsaacActionExecutor:
         self._hand_joint_limits = hand_joint_limits
         self._sim_device = sim_device
         self._torch = torch
+        self._last_hand_target = None
 
     def execute_one(
         self,
@@ -214,10 +215,16 @@ class IsaacActionExecutor:
             dtype=self._torch.float32,
             device=self._sim_device,
         ).unsqueeze(0)
+        self._last_hand_target = hand_targets.detach().clone()
         self._robot.set_joint_position_target(
             target=hand_targets,
             joint_ids=self._right_joint_ids,
         )
+
+    def last_hand_target(self) -> Any | None:
+        if self._last_hand_target is None:
+            return None
+        return self._last_hand_target.detach().clone()
 
 
 def run_isaac_play(args: Any) -> int:
@@ -228,6 +235,7 @@ def run_isaac_play(args: Any) -> int:
     from g1_wuji_teleop.robots.g1_wuji.runtime import (
         as_torch,
         robot_profile_from_config,
+        with_robot_variant_override,
         wuji_hand_runtime_config,
     )
     from g1_wuji_teleop.robots.g1_wuji.scene import (
@@ -246,6 +254,9 @@ def run_isaac_play(args: Any) -> int:
         teleop_session._load_yaml_file(config_path),
         INPUT_PROFILE_CONFIG,
     )
+    teleop_config = with_robot_variant_override(
+        teleop_config, args.robot_variant
+    )
     robot_profile = robot_profile_from_config(teleop_config)
     status_label = robot_profile.status_label
     wuji_hand_config = wuji_hand_runtime_config(teleop_config)
@@ -259,6 +270,7 @@ def run_isaac_play(args: Any) -> int:
     )
     head_view_camera_config = teleop_session._head_view_camera_config(teleop_config)
     table_overhead_camera_config = teleop_session._table_overhead_camera_config(teleop_config)
+    teleop_viewport_layout_config = teleop_session._teleop_viewport_layout_config(teleop_config)
     contact_optimization_config = teleop_session._contact_optimization_config(teleop_config)
     initial_world_position = teleop_session._robot_initial_world_position(teleop_config)
     initial_world_orientation_xyzw = teleop_session._robot_initial_world_orientation_xyzw(teleop_config)
@@ -312,6 +324,7 @@ def run_isaac_play(args: Any) -> int:
     scene_config = G1WujiSceneConfig(
         robot_prim=robot_prim,
         robot_usd=robot_usd,
+        robot_profile=robot_profile,
         initial_world_position=initial_world_position,
         initial_world_orientation_xyzw=initial_world_orientation_xyzw,
         initial_hand_joint_positions=wuji_hand_config.initial_joint_positions,
@@ -342,12 +355,20 @@ def run_isaac_play(args: Any) -> int:
         target=torch.as_tensor(right_initial_targets, device=sim.device).unsqueeze(0),
         joint_ids=right_joint_ids,
     )
-    left_elbow_lock_joint_ids, left_elbow_lock_joint_names = robot.find_joints(
-        [teleop_session.LEFT_ELBOW_LOCK_JOINT],
-        preserve_order=True,
-    )
+    left_lock_joint_name = robot_profile.left_lock_joint_name
+    left_elbow_lock_joint_ids: list[int] = []
     left_elbow_lock_target = None
-    if teleop_session.LEFT_ELBOW_LOCK_JOINT in left_elbow_lock_joint_names:
+    if left_lock_joint_name:
+        left_elbow_lock_joint_ids_raw, left_elbow_lock_joint_names = robot.find_joints(
+            [left_lock_joint_name],
+            preserve_order=True,
+        )
+        left_elbow_lock_joint_ids = [
+            int(joint_id) for joint_id in left_elbow_lock_joint_ids_raw
+        ]
+    else:
+        left_elbow_lock_joint_names = []
+    if left_lock_joint_name and left_lock_joint_name in left_elbow_lock_joint_names:
         left_elbow_lock_target = as_torch(robot.data.default_joint_pos)[
             :, [int(left_elbow_lock_joint_ids[0])]
         ].clone()
@@ -374,6 +395,12 @@ def run_isaac_play(args: Any) -> int:
     )
     xform_cache = UsdGeom.XformCache()
     viewport_api = omni_viewport_utility.get_active_viewport()
+    default_viewport_camera_path = (
+        str(viewport_api.camera_path)
+        if viewport_api is not None
+        and getattr(viewport_api, "camera_path", None) is not None
+        else None
+    )
     head_view_camera = (
         teleop_session.HeadViewCameraController(
             stage=stage,
@@ -398,6 +425,18 @@ def run_isaac_play(args: Any) -> int:
         )
         if table_overhead_camera_config.enabled and stage is not None
         else None
+    )
+    teleop_viewport_layout = teleop_session.TeleopViewportLayoutController(
+        config=teleop_viewport_layout_config,
+        viewport_utility=omni_viewport_utility,
+        main_viewport_api=viewport_api,
+        global_camera_path=default_viewport_camera_path,
+        head_camera_path=(
+            None if head_view_camera is None else head_view_camera.camera_path
+        ),
+        table_camera_path=(
+            None if table_overhead_camera is None else table_overhead_camera.camera_path
+        ),
     )
 
     # 组装和训练数据同名的两个视觉输入：front/table。
@@ -523,15 +562,36 @@ def run_isaac_play(args: Any) -> int:
     app_window = omni_appwindow.get_default_app_window()
     input_interface = carb.input.acquire_input_interface()
     keyboard_reset_requested = False
+    keyboard_hold_open_requested = False
+    hold_open_active = False
+    held_arm_targets: list[tuple[Any, Any]] = []
+    hold_open_started_at = 0.0
+    hold_open_hand_start_target: Any | None = None
+    hold_open_hand_duration_s = max(
+        0.0,
+        float(getattr(args, "hold_open_hand_duration_s", 1.5)),
+    )
+    right_hand_open_targets = torch.as_tensor(
+        right_initial_targets,
+        dtype=torch.float32,
+        device=sim.device,
+    ).unsqueeze(0)
 
     def on_keyboard_event(event: Any, *event_args: Any, **event_kwargs: Any) -> bool:
-        nonlocal keyboard_reset_requested
-        if event.type == carb.input.KeyboardEventType.KEY_PRESS and _keyboard_input_matches(
-            event.input,
-            ("R", "KEY_R"),
-            carb_input=carb.input,
-        ):
-            keyboard_reset_requested = True
+        nonlocal keyboard_hold_open_requested, keyboard_reset_requested
+        if event.type == carb.input.KeyboardEventType.KEY_PRESS:
+            if _keyboard_input_matches(
+                event.input,
+                ("R", "KEY_R"),
+                carb_input=carb.input,
+            ):
+                keyboard_reset_requested = True
+            elif _keyboard_input_matches(
+                event.input,
+                ("O", "KEY_O"),
+                carb_input=carb.input,
+            ):
+                keyboard_hold_open_requested = True
         return True
 
     keyboard_subscription = (
@@ -549,8 +609,44 @@ def run_isaac_play(args: Any) -> int:
         )
     else:
         print(
-            f"[{status_label}] keyboard reset enabled: press R in the Kit window to reset and enter a new task.",
+            f"[{status_label}] keyboard controls enabled: press O to hold the right arm target "
+            f"and smoothly open the right hand over {hold_open_hand_duration_s:.2f}s; "
+            "press R to reset and enter a new task.",
             flush=True,
+        )
+
+    def capture_arm_hold_targets() -> list[tuple[Any, Any]]:
+        captured: list[tuple[Any, Any]] = []
+        last_targets = getattr(arm_ik, "_last_targets", {})
+        for side, joint_ids in getattr(arm_ik, "_joint_ids", {}).items():
+            target = last_targets.get(side)
+            if target is None:
+                target = as_torch(robot.data.joint_pos)[:, joint_ids]
+            captured.append((target.detach().clone(), joint_ids))
+        return captured
+
+    def smooth_open_alpha(now: float) -> float:
+        if hold_open_hand_duration_s <= 1.0e-6:
+            return 1.0
+        alpha = min(max((now - hold_open_started_at) / hold_open_hand_duration_s, 0.0), 1.0)
+        return float(alpha * alpha * (3.0 - 2.0 * alpha))
+
+    def apply_hold_open_targets(now: float) -> None:
+        for arm_target, arm_joint_ids in held_arm_targets:
+            robot.set_joint_position_target(
+                target=arm_target,
+                joint_ids=arm_joint_ids,
+            )
+        if hold_open_hand_start_target is None:
+            hand_target = right_hand_open_targets
+        else:
+            alpha = smooth_open_alpha(now)
+            hand_target = hold_open_hand_start_target + (
+                right_hand_open_targets - hold_open_hand_start_target
+            ) * alpha
+        robot.set_joint_position_target(
+            target=hand_target,
+            joint_ids=right_joint_ids,
         )
 
     def restore_robot_initial_pose() -> None:
@@ -661,9 +757,13 @@ def run_isaac_play(args: Any) -> int:
             f"[{status_label}] SmolVLA Isaac play ready: policy_server={policy.endpoint} "
             f"checkpoint={policy_info.get('checkpoint')} "
             f"scene={'builtin_grasp' if scene_usd is None else str(scene_usd)} "
-            f"cameras={sorted(camera_specs)} policy_fps={args.policy_fps}",
+            f"cameras={sorted(camera_specs)} policy_fps={args.policy_fps} "
+            f"teleop_viewport_layout={teleop_viewport_layout_config.enabled}",
             flush=True,
         )
+        teleop_viewport_layout.show()
+        for _ in range(3):
+            step_scene_once()
         task_text = _prompt_for_task(args, status_label=status_label)
         print(
             f"[{status_label}] entering play loop: chunk_steps={args.chunk_steps} "
@@ -689,6 +789,11 @@ def run_isaac_play(args: Any) -> int:
 
             if keyboard_reset_requested:
                 keyboard_reset_requested = False
+                keyboard_hold_open_requested = False
+                hold_open_active = False
+                held_arm_targets = []
+                hold_open_started_at = 0.0
+                hold_open_hand_start_target = None
                 action_chunk = None
                 action_index = 0
                 last_policy_time = 0.0
@@ -703,6 +808,32 @@ def run_isaac_play(args: Any) -> int:
                     f"[{status_label}] resumed play loop: task={task_text!r}",
                     flush=True,
                 )
+                continue
+
+            if keyboard_hold_open_requested:
+                keyboard_hold_open_requested = False
+                hold_open_active = True
+                action_chunk = None
+                action_index = 0
+                last_policy_time = 0.0
+                last_action_time = 0.0
+                held_arm_targets = capture_arm_hold_targets()
+                hold_open_started_at = now
+                hold_open_hand_start_target = executor.last_hand_target()
+                if hold_open_hand_start_target is None:
+                    hold_open_hand_start_target = as_torch(robot.data.joint_pos)[
+                        :, right_joint_ids
+                    ].detach().clone()
+                apply_hold_open_targets(now)
+
+            if hold_open_active:
+                apply_hold_open_targets(now)
+                if left_elbow_lock_target is not None:
+                    robot.set_joint_position_target(
+                        target=left_elbow_lock_target,
+                        joint_ids=[int(left_elbow_lock_joint_ids[0])],
+                    )
+                step_scene_once()
                 continue
 
             state, current_quat = _make_state(
@@ -803,6 +934,7 @@ def run_isaac_play(args: Any) -> int:
             policy.close()
         if image_source is not None:
             image_source.close()
+        teleop_viewport_layout.close()
         simulation_app.close()
 
     return 0

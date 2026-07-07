@@ -36,6 +36,9 @@ vendored `wuji-retargeting` checkout does not need its nested
       --config examples/g1_wuji_teleop/config/avp_manus.yml
   ```
 
+  Use `config/avp_manus.yml` for `g1_wuji`, or
+  `config/avp_manus_north_poc2_2.yml` for `north_poc2_2`.
+
   Use `--input-profile avp-manus` for AVP hand-wrist EE poses with MANUS
   finger retargeting, or `--input-profile vr-manus` for VR controller EE poses
   with MANUS finger retargeting. The default `--input-profile config` keeps the

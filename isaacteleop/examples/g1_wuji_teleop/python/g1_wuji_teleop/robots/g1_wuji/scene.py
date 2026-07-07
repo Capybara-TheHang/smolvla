@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from .robot.articulation import make_g1_wuji_robot_cfg
+
 
 TABLE_TOP_SIZE_M = (1.20, 0.75, 0.05)
 TABLE_TOP_CENTER_M = (0.0, 0.5, 0.74)
@@ -106,6 +108,7 @@ class G1WujiSceneConfig:
     initial_world_orientation_xyzw: tuple[float, float, float, float]
     initial_hand_joint_positions: Mapping[str, float]
     light_intensity: float
+    robot_profile: Any | None = None
     scene_usd: Path | None = None
     scene_prim_path: str = "/World/Scene"
     contact_optimization: ContactOptimizationConfig = field(
@@ -113,142 +116,8 @@ class G1WujiSceneConfig:
     )
 
 
-def _xyzw_to_wxyz(
-    quat_xyzw: tuple[float, float, float, float],
-) -> tuple[float, float, float, float]:
-    x, y, z, w = quat_xyzw
-    return (w, x, y, z)
-
-
-def make_g1_wuji_robot_cfg(config: G1WujiSceneConfig):
-    import isaaclab.sim as sim_utils
-    from isaaclab.actuators import ImplicitActuatorCfg
-    from isaaclab.assets import ArticulationCfg
-
-    contact = config.contact_optimization
-    robot_max_depenetration_velocity = (
-        contact.robot_max_depenetration_velocity if contact.enabled else 1.0
-    )
-    hand_contact_offset = contact.hand_contact_offset_m if contact.enabled else 0.002
-    hand_rest_offset = contact.hand_rest_offset_m if contact.enabled else 0.001
-    robot_solver_position_iterations = (
-        contact.robot_solver_position_iteration_count if contact.enabled else 16
-    )
-    robot_solver_velocity_iterations = (
-        contact.robot_solver_velocity_iteration_count if contact.enabled else 4
-    )
-
-    joint_pos = {
-        "right_wrist_yaw_joint": 0.0,
-        "left_wrist_yaw_joint": 0.0,
-        ".*_wrist_pitch_joint": 0.0,
-        ".*_wrist_roll_joint": 0.0,
-        ".*_shoulder_pitch_joint": 0.0,
-        ".*_shoulder_roll_joint": 0.0,
-        ".*_shoulder_yaw_joint": 0.0,
-        "right_elbow_joint": 0.0,
-        "left_elbow_joint": 1.57,
-    }
-    joint_pos.update(
-        {
-            name: float(value)
-            for name, value in config.initial_hand_joint_positions.items()
-        }
-    )
-
-    return ArticulationCfg(
-        prim_path=config.robot_prim,
-        spawn=sim_utils.UsdFileCfg(
-            usd_path=str(config.robot_usd),
-            activate_contact_sensors=False,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(
-                disable_gravity=True,
-                retain_accelerations=False,
-                max_linear_velocity=100.0,
-                max_angular_velocity=1000.0,
-                max_depenetration_velocity=robot_max_depenetration_velocity,
-            ),
-            collision_props=sim_utils.CollisionPropertiesCfg(
-                contact_offset=hand_contact_offset,
-                rest_offset=hand_rest_offset,
-            ),
-            articulation_props=sim_utils.ArticulationRootPropertiesCfg(
-                enabled_self_collisions=False,
-                solver_position_iteration_count=robot_solver_position_iterations,
-                solver_velocity_iteration_count=robot_solver_velocity_iterations,
-                sleep_threshold=0.005,
-                stabilization_threshold=0.001,
-            ),
-        ),
-        init_state=ArticulationCfg.InitialStateCfg(
-            pos=config.initial_world_position,
-            # Config stores xyzw; IsaacLab InitialStateCfg.rot expects wxyz.
-            rot=_xyzw_to_wxyz(config.initial_world_orientation_xyzw),
-            joint_pos=joint_pos,
-            joint_vel={".*": 0.0},
-        ),
-        soft_joint_pos_limit_factor=0.98,
-        actuators=_wuji_actuators(ImplicitActuatorCfg, contact),
-    )
-
-
-def _wuji_actuators(ImplicitActuatorCfg, contact: ContactOptimizationConfig):
-    if contact.enabled:
-        finger_effort_limit_sim = contact.finger_effort_limit_sim
-        finger_velocity_limit_sim = contact.finger_velocity_limit_sim
-        finger_stiffness = contact.finger_stiffness
-        finger_damping = contact.finger_damping
-    else:
-        finger_effort_limit_sim = 100.0
-        finger_velocity_limit_sim = 6.0
-        finger_stiffness = 3000.0
-        finger_damping = 100.0
-
-    common = {
-        "base": ImplicitActuatorCfg(
-            joint_names_expr=["base_.*"],
-            effort_limit_sim=100000.0,
-            velocity_limit_sim=1000.0,
-            stiffness=1e6,
-            damping=1e4,
-        ),
-        "right_arm": ImplicitActuatorCfg(
-            joint_names_expr=["right_shoulder_.*", "right_elbow_joint"],
-            effort_limit_sim=5.0,
-            velocity_limit_sim=3.0,
-            stiffness=1500.0,
-            damping=300.0,
-        ),
-        "left_arm": ImplicitActuatorCfg(
-            joint_names_expr=["left_shoulder_.*", "left_elbow_joint"],
-            effort_limit_sim=5.0,
-            velocity_limit_sim=3.0,
-            stiffness=1500.0,
-            damping=300.0,
-        ),
-        "wrist": ImplicitActuatorCfg(
-            joint_names_expr=[
-                "left_wrist_roll_joint",
-                "left_wrist_pitch_joint",
-                "left_wrist_yaw_joint",
-                "right_wrist_roll_joint",
-                "right_wrist_pitch_joint",
-                "right_wrist_yaw_joint",
-            ],
-            effort_limit_sim=300.0,
-            velocity_limit_sim=8.0,
-            stiffness=1500.0,
-            damping=300.0,
-        ),
-    }
-    common["fingers"] = ImplicitActuatorCfg(
-        joint_names_expr=["left_finger.*", "right_finger.*"],
-        effort_limit_sim=finger_effort_limit_sim,
-        velocity_limit_sim=finger_velocity_limit_sim,
-        stiffness=finger_stiffness,
-        damping=finger_damping,
-    )
-    return common
+def _status_label(config: G1WujiSceneConfig) -> str:
+    return str(getattr(config.robot_profile, "status_label", "G1-Wuji"))
 
 
 def _make_shape_cfg_without_visual_material(shape_cfg_type: Any, **kwargs: Any) -> Any:
@@ -366,7 +235,7 @@ def _apply_hand_cylinder_contact_optimization(
 
     if contact.hand_cylinder_only:
         print(
-            "[G1-Wuji] contact optimization: kept "
+            f"[{_status_label(config)}] contact optimization: kept "
             f"{kept_robot_colliders} hand collider(s), disabled "
             f"{disabled_robot_colliders} non-hand robot collider(s), disabled "
             f"{disabled_left_side_colliders} left-side robot collider(s).",
@@ -381,8 +250,8 @@ def _spawn_external_scene_usd(config: G1WujiSceneConfig, sim_utils: Any) -> None
     scene_cfg = sim_utils.UsdFileCfg(usd_path=str(config.scene_usd))
     scene_cfg.func(config.scene_prim_path, scene_cfg)
     print(
-        f"[G1-Wuji] loaded external scene USD at {config.scene_prim_path}: "
-        f"{config.scene_usd}",
+        f"[{_status_label(config)}] loaded external scene USD at "
+        f"{config.scene_prim_path}: {config.scene_usd}",
         flush=True,
     )
 

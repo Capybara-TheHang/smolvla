@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from ..paths import default_config_path, ensure_import_paths, repo_root
+from ..robots.g1_wuji.runtime import normalize_robot_variant
 
 
 SIDE_NAMES = ("left", "right")
@@ -130,7 +131,10 @@ FIXED_G1_WUJI_RETARGET_DEFAULTS = {
     },
 }
 
-FIXED_NATIVE_RETARGET_DEFAULTS_BY_VARIANT = {"g1_wuji": FIXED_G1_WUJI_RETARGET_DEFAULTS}
+FIXED_NATIVE_RETARGET_DEFAULTS_BY_VARIANT = {
+    "g1_wuji": FIXED_G1_WUJI_RETARGET_DEFAULTS,
+    "north_poc2_2": FIXED_G1_WUJI_RETARGET_DEFAULTS,
+}
 
 
 def normalize_input_profile(value: str | None) -> str:
@@ -289,13 +293,8 @@ def _as_sequence(value: Any, name: str) -> Sequence[Any]:
 
 def _robot_variant_from_config(config: Mapping[str, Any]) -> str:
     robot_cfg = _as_mapping(config.get("robot"), "robot")
-    raw = str(robot_cfg.get("variant", "g1_wuji")).strip().lower()
-    aliases = {
-        "g1wuji": "g1_wuji",
-        "g1-wuji": "g1_wuji",
-        "wuji": "g1_wuji",
-    }
-    normalized = aliases.get(raw, raw)
+    raw = robot_cfg.get("variant", "g1_wuji")
+    normalized = normalize_robot_variant(raw)
     if normalized not in FIXED_NATIVE_RETARGET_DEFAULTS_BY_VARIANT:
         raise ValueError(
             f"Unsupported robot.variant={raw!r}. Expected one of "
@@ -722,7 +721,10 @@ class TeleopMain:
                 ]
             elif "joint_names" in fixed_defaults:
                 joint_names = [str(name) for name in fixed_defaults["joint_names"]]
-            if joint_names is not None and robot_variant == "g1_wuji":
+            if joint_names is not None and robot_variant in {
+                "g1_wuji",
+                "north_poc2_2",
+            }:
                 # DexHandRetargeter populates output tensors by matching requested output
                 # names against the URDF DOF names reported by the optimizer. Wuji's hand
                 # URDF uses unprefixed names like finger1_joint1, so strip side prefixes

@@ -1,0 +1,101 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+session:
+  app_name: AvpManusTeleopMain  # TeleopSession/OpenXR 会话名，用于运行时识别
+
+layout:  # 外部场景 USD 路径；例如 /home/lightwheel/workspace/lw_benchhub/assets/scene04_1.usd。留空时使用 scene.py 内置桌面/方块/圆柱抓取场景
+
+robot:
+  # North POC2.2 配置；G1-Wuji 请使用 avp_manus.yml。
+  variant: north_poc2_2  # 选择要加载的机器人变体，同时决定关节集合、默认 USD 和重定向配置
+  initial_world_position: [0.0, 0.0, 0.0]  # 机器人根节点初始世界坐标 [x, y, z]，单位为米
+  initial_world_orientation_xyzw: [0.0, 0.70710678, 0.70710678, 0.0]  # 机器人根节点初始朝向四元数 [x, y, z, w]；North USD 根坐标需要该旋转才能竖直朝上
+
+  avp_frame_binding:
+    enabled: true  # 启用 AVP 头部/手部坐标系到机器人坐标系的标定和绑定
+    calibration_window_s: 3.0  # 启动或重新标定时的平均采样窗口，单位为秒
+    robot_reference_body: head_base_link  # 作为机器人参考坐标系的刚体/连杆名称
+    robot_reference_offset_pos: [0.0, 0.0, 0.0]  # 从参考刚体到目标头部参考点的位置偏移，单位为米
+    robot_reference_offset_quat_xyzw: [0.0, 0.0, 0.0, 1.0]  # 从参考刚体到目标头部参考点的朝向偏移
+    head_forward_axis_isaac: [0.0, 1.0, 0.0]  # Isaac 坐标中对应头显前向的单位轴
+    whole_body_yaw_following: false  # 允许机器人底座/全身绕 z 轴跟随头显转向
+    head_tilt_following: false  # 标定后允许头部视角相机跟随头显上下俯仰
+    whole_body_yaw_deadband_rad: 0.03  # 启用全身 yaw 跟随前所需的最小 yaw 变化，单位为弧度
+    whole_body_yaw_smoothing_alpha: 0.2  # 全身 yaw 跟随的平滑系数，数值越大响应越快
+
+  head_view_camera:
+    enabled: true  # 创建一个挂在机器人头部的模拟第一人称相机
+    activate_on_calibration: false  # 三视口布局启用时不要让头部相机直接抢占 Kit 主视口
+    prim_path: /World/TeleopTargets/HeadViewCamera  # 头部相机的 USD prim 路径
+    resolution_px: [640, 480]  # 头部相机图像分辨率 [宽, 高]；例如 [640, 480]、[1280, 720]
+    translation_offset_m: [0.1, 0.1, 0.5]  # 相机相对头部连杆局部坐标系的位置偏移 [x, y, z]，单位为米
+    orientation_offset_rpy_deg: [40.0, 0.0, -90.0]  # 相机相对头部连杆局部坐标系的朝向补偿 [roll, pitch, yaw]，单位为度；如果头部视角方向不对，优先调整这里
+    horizontal_aperture_mm: 20.955  # USD 相机水平传感器尺寸，用于决定视场角
+    focal_length_mm: 10.0  # USD 相机焦距，结合 aperture 控制初始第一人称视场角
+    clipping_range_m: [0.01, 1000.0]  # 相机近/远裁剪范围 [near, far]，单位为米
+
+  table_overhead_camera:
+    enabled: true  # 创建一个固定在桌面上方、视线垂直桌面的顶视相机
+    prim_path: /World/TeleopTargets/TableOverheadCamera  # 桌面顶视相机的 USD prim 路径
+    resolution_px: [640, 480]  # 桌面顶视图像分辨率 [宽, 高]；例如 [640, 480]、[1280, 720]
+    translation_m: [0.05, 0.1, 0.85]  # 相机世界坐标 [x, y, z]，默认位于桌面中心正上方，单位为米
+    orientation_rpy_deg: [90.0, 0.0, -10.0]  # USD 相机默认沿局部 -Z 看；这里保持垂直向下看桌面
+    horizontal_aperture_mm: 20.955  # USD 相机水平传感器尺寸，用于决定视场角
+    focal_length_mm: 5.0  # USD 相机焦距；当前高度下覆盖桌面主要操作区域
+    clipping_range_m: [0.01, 1000.0]  # 相机近/远裁剪范围 [near, far]，单位为米
+
+  head_view_xr_display:
+    enabled: false  # 将头部相机图像直接发送到 AVP/XR 视图；启用时会复用同一个 OpenXR 会话
+
+  teleop_viewport_layout:
+    enabled: true  # 完成 B 键坐标系标定后启用三视口布局
+    activate_on_calibration: true  # 标定完成后自动显示：左半屏全局视角，右上头部相机，右下桌面顶视相机
+    head_window_name: Teleop Head View  # 右上头部相机视口窗口名
+    table_window_name: Teleop Table Overhead View  # 右下桌面顶视相机视口窗口名
+    resolution_px: [960, 540]  # 新建右侧两个相机视口的初始窗口分辨率 [宽, 高]；dock 后会随布局铺满
+    right_split_ratio: 0.5  # 右侧相机列占主视口区域的比例；0.5 表示左右各半
+    table_split_ratio: 0.5  # 右侧桌面顶视相机占右侧相机列高度的比例；0.5 表示右上/右下各半
+
+  left_side_freeze:
+    enabled_from_start: true  # 从启动开始冻结左机械臂和左灵巧手，不参与遥操作目标更新
+    enabled_after_calibration: true  # 完成 B 键坐标系标定后冻结左机械臂和左灵巧手；右侧仍继续跟随
+
+  contact_optimization:
+    enabled: true  # 启用手部抓取接触优化；关闭后恢复原始场景碰撞参数
+    hand_cylinder_only: true  # 只保留灵巧手、圆柱体和必要桌面支撑的主要接触求解，减少无关碰撞计算
+    keep_tabletop_collision: true  # 保留桌面碰撞支撑圆柱，使圆柱受重力时不会穿过桌面
+    keep_floor_collision: false  # 是否保留地面碰撞；机器人已关闭重力，默认不需要
+    keep_table_leg_collision: false  # 是否保留桌腿碰撞；默认关闭以减少无关接触
+    disable_cylinder_gravity_without_tabletop: false  # 保持圆柱受重力；如果关闭桌面碰撞，圆柱会自然下落
+    disable_left_side_collision: true  # 关闭机器人左臂/左手碰撞体，左侧不参与接触和摩擦求解
+    left_side_collision_keywords: [/left, left_]  # 匹配机器人 USD 路径中的左侧碰撞体；命中后优先禁用
+    hand_collision_keywords: [hand, wujihand, finger, thumb, index, middle, ring, pinky, palm]  # 机器人 USD 路径包含这些关键词的碰撞体会被视为灵巧手碰撞体
+    hand_contact_offset_m: 0.01  # 灵巧手碰撞提前生成接触的距离；增大可减少穿模，过大会产生悬空排斥，单位为米
+    hand_rest_offset_m: 0.002  # 灵巧手接触静止间隙；略大于 0 可降低深穿透后粘住，单位为米
+    cylinder_contact_offset_m: 0.01 # 圆柱/物块提前生成接触的距离；增大可减少穿模，单位为米
+    cylinder_rest_offset_m: 0.001  # 圆柱/物块接触静止间隙；略大于 0 可帮助松手分离，单位为米
+    robot_max_depenetration_velocity: 1.5  # 机器人碰撞体最大去穿透速度；过大会导致突然弹开
+    cylinder_max_depenetration_velocity: 2.5  # 圆柱最大去穿透速度；过大会导致被手部快速推开
+    robot_solver_position_iteration_count: 24  # 机器人关节/接触位置求解迭代次数；增大可减少穿模但会增加计算和刚性
+    robot_solver_velocity_iteration_count: 6  # 机器人速度求解迭代次数
+    cylinder_solver_position_iteration_count: 24  # 圆柱刚体位置求解迭代次数
+    cylinder_solver_velocity_iteration_count: 6  # 圆柱刚体速度求解迭代次数
+    grasp_static_friction: 0.7  # 灵巧手与圆柱/物块的静摩擦；过高会在穿模后更像“粘手”
+    grasp_dynamic_friction: 0.60  # 灵巧手与圆柱/物块的动摩擦；过低会抓不稳，过高会难松开
+    grasp_friction_combine_mode: average  # 抓取接触摩擦组合模式；average 比 max 更容易释放
+    table_static_friction: 0.9  # 桌面静摩擦，保持物体不轻易滑走
+    table_dynamic_friction: 0.7  # 桌面动摩擦
+    table_friction_combine_mode: average  # 桌面摩擦组合模式
+    object_linear_damping: 0.03  # 圆柱/物块线阻尼；过高会显得发粘
+    object_angular_damping: 0.03  # 圆柱/物块角阻尼；过高会显得发粘
+    finger_effort_limit_sim: 20.0  # 手指最大驱动力；过大会把物体压进碰撞体
+    finger_velocity_limit_sim: 5.0  # 手指最大速度；过快更容易瞬时穿模
+    finger_stiffness: 1500.0  # 手指位置驱动刚度；过高更容易硬穿透并粘住
+    finger_damping: 100.0  # 手指位置驱动阻尼
+
+avp:
+  ee_pose_source: controller  # 默认保留原始路径；使用 PICO 控制器末端位姿时切换为 `controller`
+  ee_hand_joint: wrist  # 仅在 ee_pose_source=hand_tracking / wrist / palm 时使用；`wrist` 最接近原始 AVP 路径
+  controller_pose_source: aim  # 仅在 ee_pose_source=controller 时使用；PICO 控制器模式优先尝试 `aim`，需要时再尝试 `grip`
+  controller_fallback_enabled: true  # 只对手部追踪路径有意义；PICO 控制器模式下通常建议设为 false
